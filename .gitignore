@@ -1,0 +1,26 @@
+# 本地凭据与环境配置
+.env
+.env.*
+!.env.example
+命令记录（自用）.md
+
+# Python 虚拟环境、缓存与测试产物
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 本地工具与系统文件
+.idea/
+.vscode/
+.jbeval/
+.DS_Store
+
+# Nacos 运行日志与配置缓存
+chomy_ai_agent/var/
+*.log
