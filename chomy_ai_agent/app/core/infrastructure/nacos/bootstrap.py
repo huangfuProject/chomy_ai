@@ -43,13 +43,7 @@ async def load_nacos_config(
         data_id=settings.config_data_id,
         group=settings.config_group,
     )
-    config = parse_properties(content)
-
-    # 只检查键是否存在，允许 test= 这样的空字符串值。
-    if "test" not in config:
-        raise ValueError("Nacos 配置缺少必需的 test 属性")
-
-    return config
+    return parse_properties(content)
 
 
 async def initialize_nacos(app: FastAPI) -> NacosConfigClient:
