@@ -1,0 +1,20 @@
+# 静态部署示例：先将 dist 内容放到 /usr/share/nginx/html，并按实际部署调整后端地址。
+# 该示例仅说明路径规则；生产入口应配置 HTTPS，防止账号密码和 Bearer 令牌明文传输。
+server {
+    listen 80;
+    server_name localhost;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # 尾部斜线用于移除 /api/ 前缀，与 Vite 本地代理的行为保持一致。
+    location /api/ {
+        proxy_pass http://127.0.0.1:8001/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    # 直接访问 /chat 或 /admin 等前端路由时，交给 Vue Router 进行认证和权限判断。
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
