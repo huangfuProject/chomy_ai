@@ -7,6 +7,7 @@ from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import ValidationError
 
+from app.core.agent.middleware.model_routing import ModelRoutingMiddleware, AgentRunContext
 from app.core.model.model_config import ModelConfig
 
 
@@ -111,11 +112,20 @@ def build_model_config(model_id: str, config: dict[str, str]) -> ModelConfig:
         )
         raise ValueError(f"模型配置类型错误: {keys}") from None
 
-def build_deep_agent(model: BaseChatOpenAI):
+def build_deep_agent(model: BaseChatOpenAI, chat_models: dict[str, BaseChatOpenAI], default_model_id: str,):
     # 创建一个默认的agents
     agents = create_deep_agent(
         model = model,
         system_prompt="你是一个精通各种领域的大师，可以致力于帮用户解决任何问题.",
+        # 注册模型路由中间件
+        middleware=[
+            ModelRoutingMiddleware(
+                chat_models=chat_models,
+                default_model_id=default_model_id,
+            )
+        ],
+        # 声明运行时上下文类型
+        context_schema=AgentRunContext,
     )
     return agents
 
@@ -155,5 +165,5 @@ async def create_default_agent(app: FastAPI):
     # 获取默认模型
     default_model = chat_models[default_model_id]
     app.state.default_model=default_model
-    app.state.agent = build_deep_agent(default_model)
+    app.state.agent = build_deep_agent(default_model, chat_models, default_model_id)
 

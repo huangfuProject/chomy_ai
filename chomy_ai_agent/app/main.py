@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessage
 
+from app.core.agent.middleware.model_routing import AgentRunContext
 from app.core.infrastructure.nacos.bootstrap import initialize_nacos
 from app.core.model.model_factory import create_default_agent
 
@@ -39,52 +40,72 @@ app = FastAPI(lifespan=lifespan)
 async def get_test_config(request: Request):
     return request.app.state.nacos_config
 
-
 @app.get("/chat", response_class=StreamingResponse)
 async def chat(
     request: Request,
-    model_id: str = Query(
-        ..., min_length=1, pattern=r"\S",
-        description="预留模型 ID，当前统一使用启动时创建的默认 Agent",
-    ),
-    user_message: str = Query(
-        ..., min_length=1, pattern=r"\S", description="发送给默认 Agent 的用户消息",
-    ),
+    model_id: str = Query(...,min_length=1,pattern=r"^\S+$",description="模型 ID",),
+    user_message: str = Query(...,min_length=1,pattern=r"\S",description="用户消息",),
 ) -> StreamingResponse:
-    """调用默认 Agent，以 SSE 事件逐步返回模型回复。
-
-    GET 请求通过查询参数传值，例如 /chat?model_id=demo&user_message=你好。
-    model_id 暂不参与模型选择；每次调用只传入当前消息，不附带历史对话。
-    message 事件的 delta 字段包含新增文本，done 表示执行完成，error 表示执行失败。
     """
+    调用 Agent，以 SSE 事件逐步返回模型回复。
+    model_id: 指定本次 Agent 执行使用的模型。
+    user_message: 用户消息。
+    message 事件返回增量文本。
+    done 表示执行完成。
+    error 表示执行失败。
+    """
+    # 获取 Agent
     agent = getattr(request.app.state, "agent", None)
     if agent is None:
-        raise HTTPException(status_code=503, detail="默认 Agent 尚未初始化")
+        raise HTTPException(status_code=503,detail="Agent 尚未初始化",)
+    # 校验模型是否存在
+    chat_models = getattr(request.app.state,"chat_models",None,)
+    if chat_models is None:
+        raise HTTPException(status_code=503,detail="模型列表尚未初始化",)
+    model_id = model_id.strip()
+    if model_id not in chat_models:
+        raise HTTPException(status_code=400,detail=f"不支持的模型 ID: {model_id}",)
 
     def event(name: str, data: dict) -> str:
-        # 使用 JSON 编码文本，确保换行等字符不会破坏 SSE 的事件分隔格式。
-        return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+        return f"event: {name}\n"f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     async def stream_reply():
-        # SSE 注释用于立即建立响应；浏览器 EventSource 不会将其当作消息事件。
         yield ": connected\n\n"
         try:
-            # messages 模式输出 (消息片段, 元数据)，无需等待整个 Agent 执行完成。
-            # 客户端断开时 StreamingResponse 会取消生成器；aclosing 确保关闭上游流。
-            async with aclosing(agent.astream(
-                {"messages": [{"role": "user", "content": user_message}]},
-                stream_mode="messages",
-            )) as stream:
+            # 创建本次执行的运行时上下文
+            run_context = AgentRunContext(model_id=model_id)
+            # 执行 Agent
+            async with aclosing(
+                agent.astream(
+                    {
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": user_message,
+                            }
+                        ]
+                    },
+                    context=run_context,
+                    stream_mode="messages",
+                )
+            ) as stream:
                 async for message, _metadata in stream:
-                    # 忽略工具消息、推理块和空片段，仅发送 AI 消息中的文本。
                     if isinstance(message, AIMessage) and message.text:
-                        yield event("message", {"delta": message.text})
+                        yield event(
+                            "message",
+                            {"delta": message.text},
+                        )
             yield event("done", {"finished": True})
         except Exception:
-            # 响应开始后无法再更改 HTTP 状态码，通过 SSE error 事件通知调用方。
-            # 不向客户端暴露 SDK 异常详情；取消任务的异常不在此捕获范围内。
-            logger.exception("默认 Agent 流式调用失败")
-            yield event("error", {"message": "模型调用失败，请稍后重试"})
+            logger.exception(
+                "Agent 流式调用失败，model_id=%s",
+                model_id,
+            )
+
+            yield event(
+                "error",
+                {"message": "模型调用失败，请稍后重试"},
+            )
 
     return StreamingResponse(
         stream_reply(),

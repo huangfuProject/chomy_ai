@@ -268,23 +268,25 @@ JWT 签名、签发者或有效期不正确、Redis 会话缺失、用户被冻�
 | GET | `/admin/users/{id}` | 查看用户详情 | `user:get:detail` |
 | GET | `/admin/users` | 分页查询所有用户 | `user:get:page` |
 
-创建、所有修改操作及删除使用 `user:update:*` 权限组，读取使用 `user:get:*`；组名不代表隐式通配授权，每个接口须单独分配对应权限。SQL 位于 `sql/V4__init_user_management_permissions.sql`，在 V1、V2、V3 后手动执行，含 1 个“用户管理”菜单和 9 个接口/操作按钮共用节点：
+创建、所有修改操作及删除使用 `user:update:*` 权限组，读取使用 `user:get:*`；组名不代表隐式通配授权，每个接口须单独分配对应权限。SQL 位于 `sql/V4__init_user_management_permissions.sql`，在 V1、V2、V3 后手动执行，一次初始化 2 个顶层目录、2 个菜单和 9 个接口/操作按钮共用节点，共 13 个权限资源：
 
 ```bash
 # 仅写入权限种子，不创建或授权默认管理员，不会自动执行。
 psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V4__init_user_management_permissions.sql
 ```
 
-菜单编码为 `user:manage`，前端路由为 `/user-management`。所有操作节点直接挂在菜单下，保持 `permission_type=3` 和原有接口码，例如 `user:update:create` 同时用于前端创建按钮显隐及后端 POST `/admin/users` 鉴权。前端只检查登录返回权限清单中的同一个码，不再单独分配 `user:button:create`。仅有菜单不能执行操作，不同接口之间也不隐式互相授权。
+菜单编码为 `user:manage`，前端路由为 `/user-management`，归属“用户后台”目录。所有操作节点直接挂在菜单下，保持 `permission_type=3` 和原有接口码，例如 `user:update:create` 同时用于前端创建按钮显隐及后端 POST `/admin/users` 鉴权。前端只检查登录返回权限清单中的同一个码，不再单独分配 `user:button:create`。仅有菜单不能执行操作，不同接口之间也不隐式互相授权。
 
-新初始化可顺序执行新版 V4 和 V5。已执行旧版 V4 的数据库须手动执行 `sql/V5__merge_user_button_api_permissions.sql`：脚本将接口及历史按钮的子节点移到菜单下，删除七个旧按钮及其角色关联，保留接口节点原 ID、权限码、状态及现有接口角色授权。只拥有旧按钮而没有接口权限的角色不会被自动升级为可调用接口，需管理员明确分配所需操作权限。其他模块的历史按钮不受影响。
+V4 同时初始化以下菜单结构。大类使用现有目录类型 `0`，页面使用菜单类型 `1`，无需修改表结构：
 
-```bash
-# 旧版 V4 的数据库通过此脚本合并；新版 V4 后也可重复执行。
-psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V5__merge_user_button_api_permissions.sql
-```
+| 菜单大类 | 大类权限码 | 子菜单 | 菜单权限码 | 页面路由 |
+| --- | --- | --- | --- | --- |
+| 用户前台 | `menu:frontend` | 智能体 | `agent:manage` | `/agents` |
+| 用户后台 | `menu:backend` | 用户管理 | `user:manage` | `/user-management` |
 
-权限种子按编码幂等插入，不覆盖已有状态或自定义配置；固定主键或接口唯一索引冲突时回滚。V4、V5 均不会创建角色、默认管理员或自动增加角色授权。执行或迁移后须撤销受影响用户旧会话并重新登录，刷新 Redis 中的菜单树及权限快照。当前接口码与前端按钮检查示例：
+V4 已包含最终菜单结构，在 V1、V2、V3 后执行即可。智能体菜单仅定义导航，不新增业务接口。目录和菜单不隐式授予子权限；目录、菜单及接口均须显式授权给角色，前端可以补齐子菜单的祖先目录用于展示，但不能据此扩大授权。
+
+权限种子按编码幂等插入，不覆盖已有状态或自定义配置；固定主键或接口唯一索引冲突时回滚。脚本不会创建角色、默认管理员或自动增加角色授权。执行后须撤销受影响用户旧会话并重新登录，刷新 Redis 中的权限快照。当前接口码与前端按钮检查示例：
 
 ```javascript
 // 接口和按钮使用同一个权限码，不再维护独立按钮授权清单。
