@@ -1,6 +1,7 @@
 package cn.chomy.ai.backend.dto.auth;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
 /**
@@ -10,7 +11,7 @@ import jakarta.validation.constraints.Size;
  * @param password 原始密码，必填，经传输层保护后由服务端验证哈希
  * @author chomy
  */
-public record LoginRequest(@NotBlank(message = "用户名不能为空") @Size(max = 64, message = "用户名长度不能超过64个字符") String username,
+public record LoginRequest(@NotBlank(message = "用户名不能为空") @Size(max = 64, message = "用户名长度不能超过64个字符") @Pattern(regexp = "^[A-Za-z0-9_]+$", message = "非合法用户名") String username,
                            @NotBlank(message = "密码不能为空") @Size(max = 128, message = "密码长度不能超过128个字符") String password) {
     /** 避免 record 默认 toString 将原始密码写入调试日志。 */
     @Override

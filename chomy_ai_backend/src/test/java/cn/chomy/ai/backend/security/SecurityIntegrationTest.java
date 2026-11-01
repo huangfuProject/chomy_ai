@@ -300,7 +300,7 @@ class SecurityIntegrationTest {
         assertThat(store.user.getGender()).isEqualTo(Gender.UNKNOWN);
     }
 
-    /** 用户管理全部九个接口都必须与 V4 种子里的路径、方法和独立权限码对应。 */
+    /** 用户管理全部九个接口都必须与 V2 种子里的路径、方法和独立权限码对应。 */
     @Test
     void adminEndpointsMatchPermissionSeedAndDelegate() throws Exception {
         grantAdminPermissions(UserManagementPermission.values());
@@ -413,10 +413,10 @@ class SecurityIntegrationTest {
                 .content("{\"newPassword\":\"ChangedPass123!\"}")).andExpect(status().isForbidden());
     }
 
-    /** 从真实 V4 SQL 种子提取接口定义，让 HTTP 测试与实际导入权限数据保持一致。 */
+    /** 从真实 V2 SQL 种子提取接口定义，让 HTTP 测试与实际导入权限数据保持一致。 */
     private List<Permission> adminResources() throws Exception {
         String sql = java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
-                "sql", "V4__init_user_management_permissions.sql"));
+                "sql", "V2__init_rbac_and_user_data.sql"));
         List<Permission> result = new ArrayList<>();
         // 新版种子中九个接口/按钮共用节点采用同一行结构，无独立按钮编码。
         Pattern operations = Pattern.compile("\\((\\d+), '(user:(?:update|get):[^']+)', '[^']+', '([^']+)', '([A-Z]+)',");

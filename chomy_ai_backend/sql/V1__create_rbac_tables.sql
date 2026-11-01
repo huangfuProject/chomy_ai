@@ -1,14 +1,62 @@
--- RBAC 权限模型：用户 -> 用户角色 -> 角色 -> 角色权限 -> 权限。
--- 执行前提：连接 chomy_ai，并已执行 V1__create_user_table.sql 创建 public.sys_user。
--- 使用具有 public 模式建表权限的账号执行一次；本项目不自动执行迁移。
--- 所有主键由应用按 MyBatis-Plus ASSIGN_ID 生成；手工写入时须显式提供正数 ID。
--- 时间字段使用 TIMESTAMPTZ；created_by、updated_by 为审计字段，0 表示系统操作。
--- 不建立外键、CHECK、函数或触发器；关联关系、业务校验及更新时间由代码维护。
--- 本脚本只建立结构，不创建默认管理员、角色、授权关系或实际业务接口。
+-- 全量建表脚本：先执行 V0 建库，再连接 chomy_ai 数据库手动执行本脚本一次。
+-- 适用于空库初始化，统一创建用户及 RBAC 的五张表；已有数据库不能重复执行本脚本。
+-- 性别、可空手机号和邮箱均直接采用最终字段定义，不再执行历史 ALTER TABLE 脚本。
+-- 执行账号须具有 public 模式建表权限；项目不会在启动时自动执行 SQL。
+-- 主键由应用通过 MyBatis-Plus ASSIGN_ID 生成，手工写入时须显式提供正数 ID。
+-- 时间字段使用 TIMESTAMPTZ；审计操作者为 0 时表示系统操作，更新时间由业务代码维护。
+-- 仅定义表、字段、注释和索引，保留主键、NOT NULL 和默认值；唯一性通过唯一索引保障。
+-- 不创建函数、触发器、存储过程、外键、CHECK 或级联操作，关联关系及业务校验由代码负责。
+-- 使用单一事务保证全部表结构同时生效；初始化数据另见 V2__init_rbac_and_user_data.sql。
 -- @author chomy
 BEGIN;
 
--- 一、角色：角色编码唯一，用于稳定的权限判断；展示名称可以重复。
+-- 一、用户基础信息：手机号可空且提供时唯一，邮箱可空且不要求唯一。
+CREATE TABLE public.sys_user (
+    id              BIGINT          NOT NULL,
+    username        VARCHAR(64)     NOT NULL,
+    nickname        VARCHAR(64)     NOT NULL,
+    gender          SMALLINT        NOT NULL DEFAULT 0,
+    phone           VARCHAR(32),
+    email           VARCHAR(254),
+    password_hash   VARCHAR(255)    NOT NULL,
+    signature       VARCHAR(255),
+    avatar_url      VARCHAR(2048),
+    created_at      TIMESTAMPTZ     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    create_type     SMALLINT        NOT NULL,
+    created_by      BIGINT          NOT NULL,
+    status          SMALLINT        NOT NULL DEFAULT 0,
+    actived         SMALLINT        NOT NULL DEFAULT 1,
+    updated_at      TIMESTAMPTZ     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at   TIMESTAMPTZ,
+
+    CONSTRAINT pk_sys_user PRIMARY KEY (id)
+);
+
+-- 唯一索引保证并发写入时仍保持唯一性，不包含业务状态或关联关系判断。
+CREATE UNIQUE INDEX uk_sys_user_phone ON public.sys_user (phone);
+
+-- 唯一索引保证并发写入时仍保持唯一性，不包含业务状态或关联关系判断。
+CREATE UNIQUE INDEX uk_sys_user_username ON public.sys_user (username);
+
+COMMENT ON TABLE public.sys_user IS '用户基础信息表；用户名和手机号分别唯一，密码仅保存不可逆哈希；业务校验由代码维护';
+COMMENT ON COLUMN public.sys_user.id IS '用户主键，应用生成的正数雪花 ID';
+COMMENT ON COLUMN public.sys_user.username IS '用户名，必填且全表唯一，仅允许英文字母、数字和下划线，格式由后端校验';
+COMMENT ON COLUMN public.sys_user.nickname IS '昵称，必填且不为空，不能包含首尾空格，最长 64 个字符，允许重名';
+COMMENT ON COLUMN public.sys_user.gender IS '性别：0 未知、1 男、2 女，必填，默认 0，合法值由业务代码校验';
+COMMENT ON COLUMN public.sys_user.phone IS '手机号，可为空，提供时全表唯一；空字符串由业务规范为 NULL';
+COMMENT ON COLUMN public.sys_user.email IS '邮箱，非必填，最长 254 个字符，格式由后端校验，不要求唯一';
+COMMENT ON COLUMN public.sys_user.password_hash IS '密码密文，必填；保存带盐的不可逆密码哈希，禁止明文或可逆加密';
+COMMENT ON COLUMN public.sys_user.signature IS '个性签名，可为空';
+COMMENT ON COLUMN public.sys_user.avatar_url IS '头像 URL，可为空';
+COMMENT ON COLUMN public.sys_user.created_at IS '创建时间，必填，默认当前事务时间，使用带时区时间戳';
+COMMENT ON COLUMN public.sys_user.create_type IS '创建方式，必填：0 管理员追加，1 自注册';
+COMMENT ON COLUMN public.sys_user.created_by IS '创建人 ID，必填；管理员追加填管理员 ID，自注册填自身 ID，系统初始化可填 0';
+COMMENT ON COLUMN public.sys_user.status IS '用户状态，必填：0 正常，1 冻结，默认 0';
+COMMENT ON COLUMN public.sys_user.actived IS '激活标记，必填：0 未激活，1 激活，默认 1；保留 actived 命名';
+COMMENT ON COLUMN public.sys_user.updated_at IS '最近更新时间，必填，插入时默认当前时间，后续由业务代码更新';
+COMMENT ON COLUMN public.sys_user.last_login_at IS '最近成功登录时间，未登录时为空，由登录业务在认证成功后更新';
+
+-- 二、角色：角色编码唯一，用于稳定的权限判断；展示名称可以重复。
 CREATE TABLE public.sys_role (
     id              BIGINT          NOT NULL,
     role_code       VARCHAR(64)     NOT NULL,
@@ -39,7 +87,7 @@ COMMENT ON COLUMN public.sys_role.created_by IS '创建人 ID，必填，系统�
 COMMENT ON COLUMN public.sys_role.updated_at IS '最近更新时间，插入时默认当前时间，后续由业务代码更新';
 COMMENT ON COLUMN public.sys_role.updated_by IS '最近修改人 ID，可为空，系统修改填 0，由业务维护';
 
--- 二、权限：目录、菜单、按钮、接口使用统一权限码，树形关系只负责组织展示。
+-- 三、权限：目录、菜单、按钮、接口使用统一权限码，树形关系只负责组织展示。
 -- 顶层 parent_id 使用 NULL；父节点有效性、自引用、多层循环和父子类型规则由代码校验。
 -- 不定义父级授权继承：授予目录或菜单不会自动授予其子权限，后端应逐项校验权限码。
 CREATE TABLE public.sys_permission (
@@ -91,7 +139,7 @@ CREATE INDEX idx_sys_permission_parent_sort ON public.sys_permission (parent_id,
 CREATE UNIQUE INDEX uk_sys_permission_api ON public.sys_permission (api_path, http_method)
     WHERE permission_type = 3;
 
--- 三、用户角色：一个用户可分配多个角色，同一用户与角色组合只保留一条有效关系。
+-- 四、用户角色：一个用户可分配多个角色，同一用户与角色组合只保留一条有效关系。
 -- 撤销角色通过删除关系完成，不增加逻辑删除字段，避免重复授权和唯一键冲突。
 CREATE TABLE public.sys_user_role (
     id              BIGINT          NOT NULL,
@@ -116,7 +164,7 @@ COMMENT ON COLUMN public.sys_user_role.created_by IS '角色分配操作者 ID�
 -- 组合唯一键覆盖按用户查角色；反向索引用于按角色查用户及由代码执行的关系清理。
 CREATE INDEX idx_sys_user_role_role_user ON public.sys_user_role (role_id, user_id);
 
--- 四、角色权限：一个角色可以拥有多个权限，一个权限也可以授予多个角色。
+-- 五、角色权限：一个角色可以拥有多个权限，一个权限也可以授予多个角色。
 CREATE TABLE public.sys_role_permission (
     id              BIGINT          NOT NULL,
     role_id         BIGINT          NOT NULL,
@@ -142,17 +190,3 @@ CREATE INDEX idx_sys_role_permission_permission_role
     ON public.sys_role_permission (permission_id, role_id);
 
 COMMIT;
-
--- 五、鉴权查询示例（仅注释，不会自动执行）。
--- :user_id 表示绑定参数；用户必须正常且激活，角色及权限必须正常。
--- 多角色权限取并集，使用 DISTINCT 去重；无角色、无权限、被冻结或未激活均不会获得权限。
--- SELECT DISTINCT p.permission_code
--- FROM public.sys_user u
--- JOIN public.sys_user_role ur ON ur.user_id = u.id
--- JOIN public.sys_role r ON r.id = ur.role_id AND r.status = 0
--- JOIN public.sys_role_permission rp ON rp.role_id = r.id
--- JOIN public.sys_permission p ON p.id = rp.permission_id AND p.status = 0
--- WHERE u.id = :user_id AND u.status = 0 AND u.actived = 1;
--- 菜单展示可额外加载祖先节点用于构建树，但祖先节点展示不能等同于授予接口权限。
--- 父节点被禁用不会自动修改子节点状态；若业务需要禁用整棵子树，须显式批量禁用子节点。
--- 角色、权限、用户状态及关联关系改变后，后续鉴权实现应及时失效相关权限缓存。

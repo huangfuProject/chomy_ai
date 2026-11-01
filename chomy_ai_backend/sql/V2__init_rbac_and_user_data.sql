@@ -1,12 +1,15 @@
--- 用户前台、用户后台目录及菜单和接口/按钮共用权限初始化，须先执行 V1、V2、V3。
--- 每个操作只保留一个权限码：后台接口鉴权和前端按钮显隐都检查该码，不再单独创建 user:button:*。
--- 新建、激活、冻结、解冻、改密、改资料、删除属于 user:update:*；详情和分页属于 user:get:*。
--- 使用固定种子 ID，不创建角色、默认管理员或自动角色分配。
--- 按 permission_code 幂等插入，不覆盖已有状态或自定义配置；主键或接口索引冲突则事务失败。
--- 本脚本一次性初始化最终导航结构，不需要额外的菜单迁移或历史按钮清理脚本。
+-- 初始化数据脚本：连接 chomy_ai，并在 V1__create_rbac_tables.sql 建表成功后手动执行。
+-- 仅插入目录、菜单、接口/按钮权限、管理员、超级管理员角色及其显式授权关系，不修改表结构。
+-- 执行账号须具有五张业务表的必要读写权限；项目不会在启动时自动执行本脚本。
+-- 先插入权限树，再创建管理员和角色，最后建立关联，保证首次初始化即可获得完整权限。
+-- 使用固定种子 ID 和唯一索引幂等插入，不覆盖已有账户密码、状态或自定义配置。
+-- 主键或接口索引发生其他冲突时整个事务回滚；执行前应确认同名账户及角色的身份。
+-- 密码仅保留 BCrypt 哈希，不保存明文；普通测试用户不纳入版本 SQL。
+-- 超级管理员通过角色显式获得当前权限，后续新增权限仍须显式授权，不在代码中绕过鉴权。
 -- @author chomy
 BEGIN;
 
+-- 第一部分：导航目录、用户管理菜单及九个接口/操作按钮共用权限。
 -- 一、两个顶层菜单大类使用现有目录类型 0，目录只负责导航分组，不配置页面或接口路径。
 INSERT INTO public.sys_permission
     (id, parent_id, permission_code, permission_name, permission_type, status, sort_order, description, created_by)
@@ -16,12 +19,11 @@ VALUES
 ON CONFLICT (permission_code) DO NOTHING;
 
 -- 二、页面菜单使用类型 1，通过目录权限码查找实际父 ID，不依赖目录必须采用固定种子 ID。
--- 用户前台包含智能体，用户后台包含用户管理；拥有菜单不等于拥有相应业务接口权限。
+-- 用户前台暂不设置子菜单，用户后台包含用户管理；拥有菜单不等于拥有相应业务接口权限。
 INSERT INTO public.sys_permission
     (id, parent_id, permission_code, permission_name, permission_type, route_path, status, sort_order, description, created_by)
 SELECT seed.id, category.id, seed.code, seed.name, 1, seed.route, 0, 10, seed.description, 0
 FROM (VALUES
-    (970000000000200010, 'menu:frontend', 'agent:manage', '智能体', '/agents', '用户前台智能体菜单，仅表示页面导航权限，不隐式授予业务接口权限'),
     (970000000000100000, 'menu:backend', 'user:manage', '用户管理', '/user-management', '后台用户管理菜单，操作按各自接口权限码授权')
 ) AS seed(id, category_code, code, name, route, description)
 JOIN public.sys_permission AS category ON category.permission_code = seed.category_code AND category.permission_type = 0
@@ -47,12 +49,37 @@ CROSS JOIN public.sys_permission menu
 WHERE menu.permission_code = 'user:manage' AND menu.permission_type = 1
 ON CONFLICT (permission_code) DO NOTHING;
 
+-- 第二部分：管理员、超级管理员角色及用户角色和角色权限关联。
+-- 一、管理员默认正常且已激活，昵称为超级管理员、性别为男，联系方式留空。
+INSERT INTO public.sys_user
+    (id, username, nickname, gender, phone, email, password_hash, create_type, created_by, status, actived)
+VALUES
+    (970000000001000001, 'admin', '超级管理员', 1, NULL, NULL, '$2b$12$XoCCcQIGyS1O41g42KsQyOCB/89/MAyPX0BZPa1Joi9D/Ks0U7.5O', 0, 0, 0, 1)
+ON CONFLICT (username) DO NOTHING;
+
+-- 二、独立角色承载全部现有权限，业务代码仍逐项检查实际接口权限。
+INSERT INTO public.sys_role (id, role_code, role_name, description, status, sort_order, created_by)
+VALUES (970000000001000002, 'super_admin', '超级管理员', '拥有初始化时全部权限，新增权限需显式追加授权', 0, 0, 0)
+ON CONFLICT (role_code) DO NOTHING;
+
+-- 三、通过用户名和角色码查询实际 ID，避免重复执行或已存在记录时依赖固定主键。
+INSERT INTO public.sys_user_role (id, user_id, role_id, created_by)
+SELECT 970000000001000003, account.id, role.id, 0
+FROM public.sys_user AS account CROSS JOIN public.sys_role AS role
+WHERE account.username = 'admin' AND role.role_code = 'super_admin'
+ON CONFLICT (user_id, role_id) DO NOTHING;
+
+-- 四、逐项授予当前权限表全部资源，包含前后台目录、菜单和接口/操作按钮。
+-- 关联 ID 使用权限 ID 加固定偏移，重复执行保持稳定；唯一索引防止重复授权，主键冲突则回滚。
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+SELECT permission.id + 1000000000000000, role.id, permission.id, 0
+FROM public.sys_permission AS permission CROSS JOIN public.sys_role AS role
+WHERE role.role_code = 'super_admin'
+  AND NOT EXISTS (SELECT 1 FROM public.sys_role_permission AS relation
+                  WHERE relation.role_id = role.id AND relation.permission_id = permission.id)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
 COMMIT;
 
--- 最终结构：2 个顶层目录、2 个菜单、9 个接口/操作共用节点，共 13 个权限资源。
--- 用户前台 -> 智能体；用户后台 -> 用户管理 -> 九个接口/操作按钮共用权限。
--- 前端示例：permissions 中包含 user:update:create 即显示创建按钮；后端同样校验 user:update:create。
--- 仅有 user:manage 菜单仍不能调用任何操作；本脚本不新增角色权限关联。
--- 智能体菜单只定义前端路由，不创建尚未实现的业务接口或按钮权限。
--- 前端可补齐已授权子菜单的祖先目录用于展示，但展示祖先不等于授予其权限。
--- 本项目不自动执行 SQL；执行后须显式授权，已有登录用户需刷新 Redis 会话或重新登录。
+-- 共初始化 2 个目录、1 个菜单、9 个接口/操作权限；目录和菜单不隐式授予子权限。
+-- 已登录用户须撤销旧 Redis 会话或重新登录，以读取新的角色与权限快照。

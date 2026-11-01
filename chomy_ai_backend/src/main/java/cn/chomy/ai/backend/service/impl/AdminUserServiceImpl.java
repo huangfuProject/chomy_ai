@@ -53,11 +53,13 @@ public class AdminUserServiceImpl implements AdminUserService {
     public AdminUserView create(Long operatorId, AdminCreateUserRequest request) {
         // 身份与创建方式只能由服务端设置，客户端不能冒充创建人或将来源改为自注册。
         if (operatorId == null || operatorId <= 0) { throw new BizException("操作者不合法"); }
-        String username = request.username().strip();
-        ensureUnique(null, username, request.phone());
+        String username = requireUsername(request.username());
+        // 可选手机号统一存为 NULL，避免多个空号码触发唯一索引冲突。
+        String phone = emptyToNull(request.phone());
+        ensureUnique(null, username, phone);
         User user = new User();
         user.setId(IdWorker.getId()); user.setUsername(username); user.setNickname(request.nickname().strip());
-        user.setPhone(request.phone()); user.setGender(request.gender() == null ? Gender.UNKNOWN : request.gender());
+        user.setPhone(phone); user.setEmail(emptyToNull(request.email())); user.setGender(request.gender() == null ? Gender.UNKNOWN : request.gender());
         user.setSignature(emptyToNull(request.signature())); user.setAvatarUrl(emptyToNull(request.avatarUrl()));
         user.setCreateType(UserCreateType.ADMIN_CREATED); user.setCreatedBy(operatorId);
         user.setStatus(UserStatus.NORMAL);
@@ -115,17 +117,19 @@ public class AdminUserServiceImpl implements AdminUserService {
     public AdminUserView updateInfo(Long userId, AdminUpdateUserRequest request) {
         // 锁定目标账户后再判重和写入，避免相同用户的并发管理操作相互覆盖。
         User current = lockUser(userId);
-        String username = request.username().strip();
-        ensureUnique(userId, username, request.phone());
+        String username = requireUsername(request.username());
+        // 可选手机号统一存为 NULL，避免多个空号码触发唯一索引冲突。
+        String phone = emptyToNull(request.phone());
+        ensureUnique(userId, username, phone);
         // 身份标识变化后要求重新登录，单纯昵称或签名变化不打断正常会话。
-        if (!Objects.equals(current.getUsername(), username) || !Objects.equals(current.getPhone(), request.phone())) {
+        if (!Objects.equals(current.getUsername(), username) || !Objects.equals(current.getPhone(), phone)) {
             sessions.revokeUserSessions(userId);
         }
         try {
             // 不把请求直接转换为实体，避免额外 JSON 字段改变状态、创建方式、审计信息或角色。
             int changed = userMapper.update(Wrappers.lambdaUpdate(User.class).eq(User::getId, userId)
                     .set(User::getUsername, username).set(User::getNickname, request.nickname().strip())
-                    .set(User::getPhone, request.phone()).set(User::getGender, request.gender())
+                    .set(User::getPhone, phone).set(User::getEmail, emptyToNull(request.email())).set(User::getGender, request.gender())
                     .set(User::getSignature, emptyToNull(request.signature())).set(User::getAvatarUrl, emptyToNull(request.avatarUrl()))
                     .set(User::getUpdatedAt, OffsetDateTime.now()));
             requireChanged(changed);
@@ -205,7 +209,11 @@ public class AdminUserServiceImpl implements AdminUserService {
     private void ensureUnique(Long userId, String username, String phone) {
         // 将用户名或手机号重复条件括在同一个 AND 分组，更新时排除自身，避免 OR 绕过排除条件。
         Long count = userMapper.selectCount(Wrappers.lambdaQuery(User.class).ne(userId != null, User::getId, userId)
-                .and(condition -> condition.eq(User::getUsername, username).or().eq(User::getPhone, phone)));
+                .and(condition -> {
+                    // 空号码不参与判重，用户名仍始终检查；数据库唯一索引允许多个 NULL。
+                    condition.eq(User::getUsername, username);
+                    if (phone != null) { condition.or().eq(User::getPhone, phone); }
+                }));
         if (count != null && count > 0) { throw new BizException("用户名或手机号已存在"); }
     }
 
@@ -236,7 +244,16 @@ public class AdminUserServiceImpl implements AdminUserService {
     /** 预期单行变更必须成功，避免静默返回已不存在的用户。 */
     private void requireChanged(int changed) { if (changed != 1) { throw new BizException("用户不存在或状态已变化"); } }
 
-    /** 空签名或头像规范为数据库 NULL。 */
+    /** 用户名按原始值严格校验，不能先去空格后将非法输入转换成合法账号。 */
+    private String requireUsername(String value) {
+        // 服务层防止内部调用绕过表单校验，所有非 ASCII 字母、数字、下划线均拒绝。
+        if (value == null || value.length() > 64 || !value.matches("[A-Za-z0-9_]+")) {
+            throw new BizException("非合法用户名");
+        }
+        return value;
+    }
+
+    /** 空手机号、邮箱、签名或头像规范为数据库 NULL。 */
     private String emptyToNull(String value) { return value == null || value.isEmpty() ? null : value; }
 
     /** 将 LIKE 特殊字符转义，查询只具有字面量子串含义。 */

@@ -36,7 +36,7 @@ public class User {
     @JsonSerialize(using = ToStringSerializer.class)
     private Long id;
 
-    /** 用户名，必填且唯一，区分大小写，最长 64 个字符，不允许空串或首尾空格。 */
+    /** 用户名，必填且唯一，仅允许英文字母、数字和下划线，最长 64 个字符。 */
     private String username;
 
     /** 昵称，必填，最长 64 个字符，不允许空串或首尾空格，用于界面展示，允许重名。 */
@@ -45,8 +45,11 @@ public class User {
     /** 性别：0 未知、1 男、2 女，数据库默认 0，合法值由业务校验。 */
     private Gender gender;
 
-    /** 手机号，必填且唯一，最长 32 个字符；写入前由业务统一号码格式。 */
+    /** 手机号，可为空，提供时唯一；未提供或空字符串保存为 NULL。 */
     private String phone;
+
+    /** 邮箱，可为空，最长 254 个字符，不作为登录名或唯一身份标识。 */
+    private String email;
 
     /**
      * 密码密文，必填，存储带盐的不可逆密码哈希，不存储明文密码。

@@ -96,11 +96,11 @@ psql -h 81.70.166.182 -p 5432 -U root -d postgres -W -f sql/V0__create_database.
 
 ## 用户表
 
-建表脚本位于服务根目录的 `sql/V1__create_user_table.sql`。先创建数据库，再连接 `chomy_ai` 手动执行该脚本；项目尚未接入自动迁移，不会在应用启动时自动建表：
+建表脚本位于服务根目录的 `sql/V1__create_rbac_tables.sql`。先创建数据库，再连接 `chomy_ai` 手动执行该脚本；项目尚未接入自动迁移，不会在应用启动时自动建表：
 
 ```bash
 # 使用具有建表权限的数据库账号执行；遇到 SQL 错误立即停止。
-psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V1__create_user_table.sql
+psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V1__create_rbac_tables.sql
 ```
 
 表名为 `public.sys_user`，字段如下：
@@ -111,7 +111,8 @@ psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V
 | `username` | 用户名 | 必填、唯一、区分大小写，最长 64 个字符 |
 | `nickname` | 昵称 | 必填、不允许空串或首尾空格、允许重名，最长 64 个字符 |
 | `gender` | 性别 | 必填，0 未知、1 男、2 女，默认 0 |
-| `phone` | 手机号 | 必填、唯一，最长 32 个字符 |
+| `phone` | 手机号 | 可空、提供时唯一，最长 32 个字符 |
+| `email` | 邮箱 | 可空、不要求唯一，最长 254 个字符 |
 | `password_hash` | 密码密文 | 必填，最长 255 个字符，保存带盐的不可逆哈希 |
 | `signature` | 个性签名 | 可空，最长 255 个字符 |
 | `avatar_url` | 头像 URL | 可空，最长 2048 个字符 |
@@ -129,12 +130,7 @@ psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V
 
 ## RBAC 表结构
 
-脚本为 `sql/V2__create_rbac_tables.sql`，必须先在同一数据库执行 V1 用户表脚本，再执行 V2：
-
-```bash
-# 使用有建表权限的数据库账号执行，发生错误时立即停止。
-psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V2__create_rbac_tables.sql
-```
+RBAC 四张表与用户表统一由 `sql/V1__create_rbac_tables.sql` 创建，无需单独执行其他建表脚本。
 
 | 表名 | 用途 | 核心约束 |
 | --- | --- | --- |
@@ -149,7 +145,7 @@ psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V
 
 多个正常角色的正常权限取并集；鉴权时还须检查用户 `status=0`、`actived=1`。目录、菜单及历史独立按钮不隐式授予接口权限；新的接口和操作按钮使用同一个类型 3 节点与权限码，父子结构仍不隐式继承授权。禁用父权限不会自动禁用子节点。删除用户、角色或权限时，由业务代码在事务内清理相应授权关系；数据库不执行级联删除。后续权限缓存应在分配、撤销或状态变更后及时失效。
 
-脚本仅创建表、注释和索引，保留主键、NOT NULL 与字段默认值，不创建自定义函数、触发器、外键或 CHECK。脚本内包含仅供参考的鉴权查询注释，未插入默认角色或管理员，已实现 JWT、Redis 登录鉴权；后台角色、权限及授权关系的管理接口仍需后续实现，用户管理接口已提供。
+脚本仅创建表、注释和索引，保留主键、NOT NULL 与字段默认值，不创建自定义函数、触发器、外键或 CHECK。V1 不插入数据，V2 负责默认角色、管理员及权限初始化。已实现 JWT、Redis 登录鉴权；后台角色、权限及授权关系的管理接口仍需后续实现，用户管理接口已提供。
 
 ## Entity、Mapper 与 Service
 
@@ -216,7 +212,7 @@ RBAC Service 保持持久化基础骨架，用户 Service 已实现资料白名�
 
 这些个人接口只从 JWT 的 `sub` 获取用户 ID，不接受外部指定目标用户，不依赖角色即可维护自身资料。`/health/health` 和 Actuator health 的 GET 保持公开。其他业务接口必须配置类型为 3 的 `sys_permission`，按 `http_method` 和 Spring PathPattern 格式的 `api_path` 匹配；未配置时拒绝访问。同等具体模式须全部授权，精确路径优先于宽泛路径。无超级管理员隐式绕过。
 
-新数据库按 V1、V2、V3 顺序初始化；已使用旧 V1 的数据库至少须执行 `sql/V3__add_user_gender.sql` 后再运行新的用户接口。V3 仅执行 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 和字段注释，不创建函数、触发器或外键。本次代码变更不会自动迁移真实数据库。
+新数据库依次执行 V0 建库、V1 建表、V2 插入初始化数据。V1 已包含性别、可空手机号及邮箱的最终字段定义；这些脚本用于空库初始化，已有数据库应单独核对结构差异，不能重复执行 V1。本次脚本整理不会自动迁移真实数据库。
 
 登录请求示例（密码为示意，须替换为已有账号的真实密码）：
 
@@ -268,25 +264,25 @@ JWT 签名、签发者或有效期不正确、Redis 会话缺失、用户被冻�
 | GET | `/admin/users/{id}` | 查看用户详情 | `user:get:detail` |
 | GET | `/admin/users` | 分页查询所有用户 | `user:get:page` |
 
-创建、所有修改操作及删除使用 `user:update:*` 权限组，读取使用 `user:get:*`；组名不代表隐式通配授权，每个接口须单独分配对应权限。SQL 位于 `sql/V4__init_user_management_permissions.sql`，在 V1、V2、V3 后手动执行，一次初始化 2 个顶层目录、2 个菜单和 9 个接口/操作按钮共用节点，共 13 个权限资源：
+创建、所有修改操作及删除使用 `user:update:*` 权限组，读取使用 `user:get:*`；组名不代表隐式通配授权，每个接口须单独分配对应权限。SQL 位于 `sql/V2__init_rbac_and_user_data.sql`，在 V1 建表后手动执行，一次初始化 2 个顶层目录、1 个菜单和 9 个接口/操作按钮共用节点，共 12 个权限资源：
 
 ```bash
-# 仅写入权限种子，不创建或授权默认管理员，不会自动执行。
-psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V4__init_user_management_permissions.sql
+# 写入权限种子及管理员、角色和显式授权关系；不会自动执行。
+psql -h 81.70.166.182 -p 5432 -U root -d chomy_ai -W -v ON_ERROR_STOP=1 -f sql/V2__init_rbac_and_user_data.sql
 ```
 
 菜单编码为 `user:manage`，前端路由为 `/user-management`，归属“用户后台”目录。所有操作节点直接挂在菜单下，保持 `permission_type=3` 和原有接口码，例如 `user:update:create` 同时用于前端创建按钮显隐及后端 POST `/admin/users` 鉴权。前端只检查登录返回权限清单中的同一个码，不再单独分配 `user:button:create`。仅有菜单不能执行操作，不同接口之间也不隐式互相授权。
 
-V4 同时初始化以下菜单结构。大类使用现有目录类型 `0`，页面使用菜单类型 `1`，无需修改表结构：
+V2 同时初始化以下菜单结构。大类使用现有目录类型 `0`，页面使用菜单类型 `1`，无需修改表结构：
 
 | 菜单大类 | 大类权限码 | 子菜单 | 菜单权限码 | 页面路由 |
 | --- | --- | --- | --- | --- |
-| 用户前台 | `menu:frontend` | 智能体 | `agent:manage` | `/agents` |
+| 用户前台 | `menu:frontend` | 暂无子菜单 | — | — |
 | 用户后台 | `menu:backend` | 用户管理 | `user:manage` | `/user-management` |
 
-V4 已包含最终菜单结构，在 V1、V2、V3 后执行即可。智能体菜单仅定义导航，不新增业务接口。目录和菜单不隐式授予子权限；目录、菜单及接口均须显式授权给角色，前端可以补齐子菜单的祖先目录用于展示，但不能据此扩大授权。
+V2 已包含最终菜单结构，在 V1 后执行即可。用户前台保留目录，暂不设置子菜单。目录和菜单不隐式授予子权限；目录、菜单及接口均须显式授权给角色，前端可以补齐子菜单的祖先目录用于展示，但不能据此扩大授权。
 
-权限种子按编码幂等插入，不覆盖已有状态或自定义配置；固定主键或接口唯一索引冲突时回滚。脚本不会创建角色、默认管理员或自动增加角色授权。执行后须撤销受影响用户旧会话并重新登录，刷新 Redis 中的权限快照。当前接口码与前端按钮检查示例：
+权限种子按编码幂等插入，不覆盖已有状态或自定义配置；固定主键或接口唯一索引冲突时回滚。V2 后半部分创建管理员和超级管理员角色，并显式关联当前全部权限；普通角色仍须单独授权。执行后须撤销受影响用户旧会话并重新登录，刷新 Redis 中的权限快照。当前接口码与前端按钮检查示例：
 
 ```javascript
 // 接口和按钮使用同一个权限码，不再维护独立按钮授权清单。
@@ -294,9 +290,9 @@ const permissionCodes = new Set(permissions.map(item => item.permissionCode));
 const canCreateUser = permissionCodes.has('user:update:create');
 ```
 
-创建表单包含 `username`、`nickname`、`phone`、`password`、可选 `gender`、`actived`、`signature`、`avatarUrl`。用户名及手机号分别唯一；手机号采用可选 `+` 国家码和 6 至 20 位数字，不接受首尾空格。创建方式固定为管理员追加，创建人从认证 JWT 取得；状态默认正常，性别默认未知，激活默认 1，允许创建时显式指定未激活。不通过创建表单分配角色，密码只保存 BCrypt 哈希。
+创建表单包含 `username`、`nickname`、`phone`、`password`、可选 `gender`、`actived`、`signature`、`avatarUrl`。用户名唯一，仅允许英文字母、数字和下划线，其余字符返回“非合法用户名”，不自动修剪用户名空格。手机号非必填，提供时唯一，采用可选 `+` 国家码和 6 至 20 位数字；新增非必填 `email`，提供时校验邮箱格式。手机号和邮箱的空字符串保存为 NULL。创建方式固定为管理员追加，创建人从认证 JWT 取得；状态默认正常，性别默认未知，激活默认 1，允许创建时显式指定未激活。不通过创建表单分配角色，密码只保存 BCrypt 哈希。
 
-修改资料为完整 PUT 表单：`username`、`nickname`、`phone`、`gender` 必填，签名及头像可为空以清除。请求中即使出现密码、角色、状态、激活、创建人或创建方式，也不会成为更新字段。用户名或手机号变更后要求目标用户重新登录。状态和密码使用各自独立接口，不经通用资料修改绕过独立操作权限。
+修改资料为完整 PUT 表单：`username`、`nickname`、`gender` 必填，`phone`、`email` 非必填，省略或空字符串表示清空，签名及头像可为空以清除。请求中即使出现密码、角色、状态、激活、创建人或创建方式，也不会成为更新字段。用户名或手机号变更后要求目标用户重新登录。状态和密码使用各自独立接口，不经通用资料修改绕过独立操作权限。
 
 分页缺省 `current=1`、`size=20`，每页最多 100 条；支持 `username`、`nickname`、`phone` 字面量模糊查询，以及 `gender`、`status`、`actived` 数字枚举筛选，创建时间范围为 `createdFrom`、`createdTo`（ISO-8601 带时区格式，包含边界）。按创建时间倒序、ID 倒序稳定排序。示例：
 
@@ -305,11 +301,11 @@ GET /admin/users?current=1&size=20&username=demo&status=1&actived=1&gender=2
 Authorization: Bearer <accessToken>
 ```
 
-结果仍由统一响应包装，`data.records` 包含用户名、昵称、手机号、头像、性别、`status`、`actived`、`frozen`/`active` 布尔展示字段及创建时间，同时含 ID、签名和审计时间，不含密码；`data` 还包括 current、size、total 等 MyBatis-Plus 分页元数据。URL 枚举参数只接受已定义数字编码，不接受枚举名称或小数。
+结果仍由统一响应包装，`data.records` 包含用户名、昵称、手机号、邮箱、头像、性别、`status`、`actived`、`frozen`/`active` 布尔展示字段及创建时间，同时含 ID、签名和审计时间，不含密码；`data` 还包括 current、size、total 等 MyBatis-Plus 分页元数据。URL 枚举参数只接受已定义数字编码，不接受枚举名称或小数。
 
 管理端写入显式维护更新时间，并对同一目标加行锁。冻结、解冻、密码重置及删除前撤销旧会话；Redis 故障中止敏感写入，事务失败时已撤销的会话保持失效，用户重新登录即可。冻结前的 Token 不会因解冻自动复活。禁止管理用户冻结或删除自身，重置自身密码仍允许且需要重新登录。删除为物理删除，用户及其 `sys_user_role` 关系在同一数据库事务内清理，不删除共享角色、权限或历史创建人审计引用。
 
-`AdminUserServiceTest` 验证业务写入、并发唯一键提示、密码哈希、状态切换、会话撤销及关系清理；安全集成测试直接读取 V4 中的接口定义，验证路由匹配、读写权限隔离、接口与按钮共用同一权限码、菜单不隐式授予操作及服务层鉴权。
+`AdminUserServiceTest` 验证业务写入、并发唯一键提示、密码哈希、状态切换、会话撤销及关系清理；安全集成测试直接读取 V2 中的接口定义，验证路由匹配、读写权限隔离、接口与按钮共用同一权限码、菜单不隐式授予操作及服务层鉴权。
 
 ## 代码约定及构建
 
@@ -318,9 +314,19 @@ Authorization: Bearer <accessToken>
 - Java 日志使用 SLF4J，通过 Lombok `@Slf4j` 自动生成 `log` 字段；Maven 已配置注解处理器，Lombok 不打入运行包。日志使用 `{}` 占位符并保留必要的异常堆栈，不输出密码及令牌。Lombok 接入方式参考 [官方 Maven 配置说明](https://projectlombok.org/setup/maven)。
 - MyBatis-Plus 已配置 PostgreSQL 分页插件，单页最多 500 条；Mapper 放在启动类子包并添加 `@Mapper`，继承 `BaseMapper<T>`。XML 放在 `src/main/resources/mapper/`。
 - Redis 可直接注入 `StringRedisTemplate`；对象缓存需显式定义序列化方式。
-- 用户和 RBAC 表分别由 V1、V2 初始化，已有用户表通过 V3 追加性别字段；用户端接口已接入 JWT + Redis。
+- 用户和 RBAC 五张表统一由 V1 创建，V2 插入权限、管理员及显式授权数据；用户端接口已接入 JWT + Redis。
 
 ```bash
 mvn clean verify
 java -jar target/chomy-ai-backend-0.0.1-SNAPSHOT.jar
 ```
+
+## 联系方式调整与管理员初始化
+
+V1 直接定义可空手机号和 `email VARCHAR(254)`，不再保留独立的联系方式升级脚本；已有数据库须自行核对并补齐结构差异后再启动新版本。手机号唯一索引继续保留，多个未填手机号的用户可共存；邮箱不要求唯一。用户名创建、管理修改及登录表单均只允许 `[A-Za-z0-9_]+`，不允许中文、空格、连字符等其他字符。
+
+个人资料查询和管理详情、分页均返回可空邮箱；个人资料修改允许维护邮箱，不允许借此修改用户名、手机号或角色。
+
+V1 建表完成后，执行 `sql/V2__init_rbac_and_user_data.sql`，先初始化菜单权限，再初始化管理员：创建 `admin` 管理员，昵称“超级管理员”、性别男，正常且已激活；密码以 BCrypt 哈希保存。创建 `super_admin` 角色并显式关联当前全部权限。脚本重复执行不重置已有账户密码或状态，后续新增权限需再次显式授权，不通过代码绕过鉴权。
+
+普通测试用户只直接写入数据库，不纳入版本初始化 SQL。其角色只关联“用户前台”目录及其后代资源，不授予用户后台或用户管理接口权限。数据库账号需要用户、角色、权限和关联表的必要读写权限；结构迁移还需要表的所有者权限。

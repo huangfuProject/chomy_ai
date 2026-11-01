@@ -38,17 +38,18 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     }
 
     /**
-     * 只写入昵称、性别、签名、头像和更新时间；显式 set 允许将可空资料清空。
+     * 只写入昵称、性别、邮箱、签名、头像和更新时间；显式 set 允许将可空资料清空。
      * @param userId 当前认证用户 ID
      * @param request 已经过参数校验的完整资料表单
      * @return 更新后的资料
      */
     @Override
     public UserProfile updateProfile(Long userId, UpdateUserInfoRequest request) {
-        // 限定当前可用账户，仅更新允许用户自行维护的字段，显式 set 支持清空可选资料。
+        // 限定当前可用账户，仅更新允许用户自行维护的字段；邮箱等可选资料通过显式 set 支持清空。
         int updated = baseMapper.update(Wrappers.lambdaUpdate(User.class).eq(User::getId, userId)
                 .eq(User::getStatus, UserStatus.NORMAL).eq(User::getActived, ActivationStatus.ACTIVE)
                 .set(User::getNickname, request.nickname().strip()).set(User::getGender, request.gender())
+                .set(User::getEmail, emptyToNull(request.email()))
                 .set(User::getSignature, emptyToNull(request.signature())).set(User::getAvatarUrl, emptyToNull(request.avatarUrl()))
                 .set(User::getUpdatedAt, OffsetDateTime.now()));
         if (updated != 1) { throw new BizException("用户不存在或当前不可用"); }

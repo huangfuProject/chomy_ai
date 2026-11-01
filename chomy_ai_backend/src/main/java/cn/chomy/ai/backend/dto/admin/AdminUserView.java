@@ -15,7 +15,8 @@ import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
  * @param id 用户 ID，按字符串输出以保留精度
  * @param username 用户名
  * @param nickname 昵称
- * @param phone 手机号
+ * @param phone 手机号，可为空
+ * @param email 邮箱，可为空
  * @param avatarUrl 头像 URL
  * @param gender 性别数字编码
  * @param status 冻结状态数字编码
@@ -31,7 +32,7 @@ import com.fasterxml.jackson.databind.ser.std.ToStringSerializer;
  * @author chomy
  */
 public record AdminUserView(@JsonSerialize(using = ToStringSerializer.class) Long id, String username, String nickname,
-                            String phone, String avatarUrl, Gender gender, UserStatus status, ActivationStatus actived,
+                            String phone, String email, String avatarUrl, Gender gender, UserStatus status, ActivationStatus actived,
                             boolean frozen, boolean active, String signature, UserCreateType createType,
                             @JsonSerialize(using = ToStringSerializer.class) Long createdBy,
                             OffsetDateTime createdAt, OffsetDateTime updatedAt, OffsetDateTime lastLoginAt) {
@@ -42,7 +43,7 @@ public record AdminUserView(@JsonSerialize(using = ToStringSerializer.class) Lon
      */
     public static AdminUserView from(User user) {
         // 布尔展示字段由枚举推导，不在数据库中维护重复状态。
-        return new AdminUserView(user.getId(), user.getUsername(), user.getNickname(), user.getPhone(), user.getAvatarUrl(),
+        return new AdminUserView(user.getId(), user.getUsername(), user.getNickname(), user.getPhone(), user.getEmail(), user.getAvatarUrl(),
                 user.getGender(), user.getStatus(), user.getActived(), user.getStatus() == UserStatus.FROZEN,
                 user.getActived() == ActivationStatus.ACTIVE, user.getSignature(), user.getCreateType(),
                 user.getCreatedBy(), user.getCreatedAt(), user.getUpdatedAt(), user.getLastLoginAt());

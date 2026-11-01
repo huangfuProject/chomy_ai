@@ -88,7 +88,7 @@ class AdminUserServiceTest {
     /** 创建信息由服务设置审计来源、初始状态和密码密文，不能自动授予任何角色。 */
     @Test
     void createsUserWithServerControlledAuditAndHash() {
-        AdminUserView created = service.create(1L, createRequest("new-user", "13800000003", "InitialPass123!"));
+        AdminUserView created = service.create(1L, createRequest("new_user", "13800000003", "InitialPass123!"));
         User row = rows.get(created.id());
         assertThat(row.getCreateType()).isEqualTo(UserCreateType.ADMIN_CREATED);
         assertThat(row.getCreatedBy()).isEqualTo(1L);
@@ -97,6 +97,29 @@ class AdminUserServiceTest {
         assertThat(row.getGender()).isEqualTo(Gender.UNKNOWN);
         assertThat(encoder.matches("InitialPass123!", row.getPasswordHash())).isTrue();
         verifyNoInteractions(userRoles);
+    }
+
+    /** 多个未填写手机号的用户可以同时创建，空字符串规范为 NULL，邮箱可正常保存与返回。 */
+    @Test
+    void optionalContactsAreNormalizedAndEmailIsReturned() {
+        // 两种空号码均应变为 NULL，避免空字符串在唯一索引中发生冲突。
+        AdminUserView first = service.create(1L, createRequest("optional_one", null, "InitialPass123!"));
+        AdminUserView second = service.create(1L, new AdminCreateUserRequest("optional_two", "昵称", "", "test@example.com",
+                "InitialPass123!", null, null, null, null));
+        assertThat(rows.get(first.id()).getPhone()).isNull();
+        assertThat(rows.get(second.id()).getPhone()).isNull();
+        assertThat(second.email()).isEqualTo("test@example.com");
+    }
+
+    /** 内部调用也必须拒绝非法用户名，不能去掉空格后悄悄接受，且不得写入数据库。 */
+    @Test
+    void rejectsIllegalUsernameBeforePersistence() {
+        // 覆盖中文、标点、空格和非 ASCII 字母，明确用户名使用英文字符集。
+        for (String username : List.of("中文", "bad-name", "user name", " admin", "admin ", "é")) {
+            assertThatThrownBy(() -> service.create(1L, createRequest(username, null, "InitialPass123!")))
+                    .isInstanceOf(BizException.class).hasMessage("非合法用户名");
+        }
+        verify(users, never()).insert(any(User.class));
     }
 
     /** 预检查及数据库并发唯一键冲突都应转成业务错误，不能暴露 SQL 原文。 */
@@ -141,7 +164,7 @@ class AdminUserServiceTest {
     void updatesOnlyAllowedFields() {
         User before = copy(rows.get(2L));
         AdminUserView result = service.updateInfo(2L,
-                new AdminUpdateUserRequest("renamed", "新昵称", "13800000004", Gender.FEMALE, null, ""));
+                new AdminUpdateUserRequest("renamed", "新昵称", "13800000004", null, Gender.FEMALE, null, ""));
         assertThat(result.nickname()).isEqualTo("新昵称"); assertThat(result.gender()).isEqualTo(Gender.FEMALE);
         assertThat(result.signature()).isNull(); assertThat(result.avatarUrl()).isNull();
         assertThat(rows.get(2L).getPasswordHash()).isEqualTo(before.getPasswordHash());
@@ -212,7 +235,7 @@ class AdminUserServiceTest {
 
     /** 创建虚构表单，避免测试代码依赖真实管理员密码。 */
     private AdminCreateUserRequest createRequest(String username, String phone, String password) {
-        return new AdminCreateUserRequest(username, "测试昵称", phone, password, null, null, null, null);
+        return new AdminCreateUserRequest(username, "测试昵称", phone, null, password, null, null, null, null);
     }
 
     /** 数据库读取返回副本，避免业务修改实体影响替身中的其他操作。 */

@@ -3,6 +3,7 @@ package cn.chomy.ai.backend.dto.admin;
 import cn.chomy.ai.backend.enums.ActivationStatus;
 import cn.chomy.ai.backend.enums.Gender;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 
@@ -12,7 +13,8 @@ import jakarta.validation.constraints.Size;
  *
  * @param username 必填且唯一的用户名
  * @param nickname 必填昵称，允许重名
- * @param phone 必填且唯一的手机号，采用可选国家码和数字的规范格式
+ * @param phone 可空但提供时唯一的手机号，采用可选国家码和数字的规范格式
+ * @param email 非必填邮箱，空字符串保存为 NULL
  * @param password 初始原密码，8 至 72 个字符，业务层同时检查 UTF-8 字节上限
  * @param gender 性别，未提供时使用未知
  * @param actived 初始激活状态，未提供时使用激活
@@ -21,9 +23,10 @@ import jakarta.validation.constraints.Size;
  * @author chomy
  */
 public record AdminCreateUserRequest(
-        @NotBlank(message = "用户名不能为空") @Size(max = 64, message = "用户名不能超过64个字符") String username,
+        @NotBlank(message = "用户名不能为空") @Size(max = 64, message = "用户名不能超过64个字符") @Pattern(regexp = "^[A-Za-z0-9_]+$", message = "非合法用户名") String username,
         @NotBlank(message = "昵称不能为空") @Size(max = 64, message = "昵称不能超过64个字符") String nickname,
-        @NotBlank(message = "手机号不能为空") @Pattern(regexp = "^\\+?[0-9]{6,20}$", message = "手机号格式不正确") String phone,
+        @Pattern(regexp = "^(?:\\+?[0-9]{6,20})?$", message = "手机号格式不正确") String phone,
+        @Email(message = "邮箱格式不正确") @Size(max = 254, message = "邮箱不能超过254个字符") String email,
         @NotBlank(message = "密码不能为空") @Size(min = 8, max = 72, message = "密码长度必须为8至72个字符") String password,
         Gender gender, ActivationStatus actived,
         @Size(max = 255, message = "个性签名不能超过255个字符") String signature,

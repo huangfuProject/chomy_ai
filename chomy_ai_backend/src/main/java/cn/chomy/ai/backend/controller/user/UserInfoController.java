@@ -35,7 +35,7 @@ public class UserInfoController {
     }
 
     /**
-     * 修改自己的昵称、性别、签名及头像，其他 JSON 字段不会成为更新字段。
+     * 修改自己的昵称、性别、邮箱、签名及头像，其他 JSON 字段不会成为更新字段。
      * @param jwt 当前认证 JWT
      * @param request 完整个人资料表单
      * @return 更新后的资料
