@@ -10,7 +10,7 @@
         <relativePath/>
     </parent>
 
-    <groupId>com.chomy.ai</groupId>
+    <groupId>cn.chomy.ai</groupId>
     <artifactId>chomy-ai-backend</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>chomy-ai-backend</name>
@@ -23,6 +23,22 @@
     </properties>
 
     <dependencies>
+        <!-- Spring Security 负责认证、请求级鉴权及方法级鉴权，版本由 Spring Boot 管理。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+        <!-- 使用 Spring Security 原生 JWT 编解码和 Bearer Token 过滤器，避免自定义验签实现。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+        <!-- 安全测试使用真实过滤器链及认证流程，生产运行包不包含此依赖。 -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-test</artifactId>
+            <scope>test</scope>
+        </dependency>
         <!-- Lombok 仅在编译阶段生成日志字段等代码，版本由 Spring Boot 统一管理。 -->
         <dependency>
             <groupId>org.projectlombok</groupId>

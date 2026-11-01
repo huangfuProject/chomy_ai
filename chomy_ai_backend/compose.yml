@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: chomy_ai
       POSTGRES_USER: ${DB_USERNAME:-chomy}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-chomy_dev}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-xxxxxx}
     ports:
       - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
