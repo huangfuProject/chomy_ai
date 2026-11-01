@@ -1,11 +1,11 @@
 -- 初始化数据脚本：连接 chomy_ai，并在 V1__create_rbac_tables.sql 建表成功后手动执行。
 -- 仅插入目录、菜单、接口/按钮权限、管理员、超级管理员角色及其显式授权关系，不修改表结构。
--- 执行账号须具有五张业务表的必要读写权限；项目不会在启动时自动执行本脚本。
--- 先插入权限树，再创建管理员和角色，最后建立关联，保证首次初始化即可获得完整权限。
+-- 执行账号须具有业务表的必要读写权限；项目不会在启动时自动执行本脚本。
+-- 先插入全部权限及管理员、角色，最后统一将全部权限授予超级管理员角色。
 -- 使用固定种子 ID 和唯一索引幂等插入，不覆盖已有账户密码、状态或自定义配置。
 -- 主键或接口索引发生其他冲突时整个事务回滚；执行前应确认同名账户及角色的身份。
 -- 密码仅保留 BCrypt 哈希，不保存明文；普通测试用户不纳入版本 SQL。
--- 超级管理员通过角色显式获得当前权限，后续新增权限仍须显式授权，不在代码中绕过鉴权。
+-- 超级管理员通过角色显式获得全部权限；后续新增权限也须同步写入角色权限关系，不在代码中绕过鉴权。
 -- @author chomy
 BEGIN;
 
@@ -57,9 +57,9 @@ VALUES
     (970000000001000001, 'admin', '超级管理员', 1, NULL, NULL, '$2b$12$XoCCcQIGyS1O41g42KsQyOCB/89/MAyPX0BZPa1Joi9D/Ks0U7.5O', 0, 0, 0, 1)
 ON CONFLICT (username) DO NOTHING;
 
--- 二、独立角色承载全部现有权限，业务代码仍逐项检查实际接口权限。
+-- 二、独立角色承载全部权限，业务代码仍逐项检查实际接口权限。
 INSERT INTO public.sys_role (id, role_code, role_name, description, status, sort_order, created_by)
-VALUES (970000000001000002, 'super_admin', '超级管理员', '拥有初始化时全部权限，新增权限需显式追加授权', 0, 0, 0)
+VALUES (970000000001000002, 'super_admin', '超级管理员', '拥有全部权限，后续新增权限由版本脚本同步授予', 0, 0, 0)
 ON CONFLICT (role_code) DO NOTHING;
 
 -- 三、通过用户名和角色码查询实际 ID，避免重复执行或已存在记录时依赖固定主键。
@@ -69,8 +69,26 @@ FROM public.sys_user AS account CROSS JOIN public.sys_role AS role
 WHERE account.username = 'admin' AND role.role_code = 'super_admin'
 ON CONFLICT (user_id, role_id) DO NOTHING;
 
--- 四、逐项授予当前权限表全部资源，包含前后台目录、菜单和接口/操作按钮。
--- 关联 ID 使用权限 ID 加固定偏移，重复执行保持稳定；唯一索引防止重复授权，主键冲突则回滚。
+-- 第三部分：项目及对话独立接口权限，直接归属用户前台目录，不新建菜单。
+-- 先插入全部接口节点，再由下方统一授权语句将其加入超级管理员角色。
+-- 权限与操作按钮共用类型 3 节点；其他角色仍须单独授权，执行后须撤销受影响用户旧 Redis 会话。
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+SELECT seed.id, category.id, seed.code, seed.name, 3, seed.path, seed.method, 0, seed.sort_order, '仅可操作本人数据，接口和操作按钮共用此权限码', 0
+FROM (VALUES
+    (970000000000200011, 'agent:project:create', '创建项目', '/user/agent/projects', 'POST', 10),
+    (970000000000200012, 'agent:project:delete', '删除项目及对话', '/user/agent/projects/{projectId}', 'DELETE', 20),
+    (970000000000200013, 'agent:chat:project', '项目对话分页', '/user/agent/projects/{projectId}/chats', 'GET', 30),
+    (970000000000200014, 'agent:chat:standalone', '非项目对话分页', '/user/agent/chats/standalone', 'GET', 40),
+    (970000000000200015, 'agent:chat:archived', '归档对话分页', '/user/agent/chats/archived', 'GET', 50),
+    (970000000000200016, 'agent:chat:delete', '删除对话', '/user/agent/chats/{chatId}', 'DELETE', 60)
+) AS seed(id, code, name, path, method, sort_order)
+JOIN public.sys_permission AS category ON category.permission_code = 'menu:frontend' AND category.permission_type = 0
+ON CONFLICT (permission_code) DO NOTHING;
+
+-- 统一将权限表中的全部权限显式授予超级管理员角色，包括本次及后续脚本新增的权限。
+-- 通过角色码读取实际角色 ID，不给其他角色或用户直接增加授权，不在代码中绕过 RBAC。
+-- 关联 ID 使用权限 ID 加固定偏移，重复执行不生成重复关系；其他主键冲突则事务回滚。
 INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
 SELECT permission.id + 1000000000000000, role.id, permission.id, 0
 FROM public.sys_permission AS permission CROSS JOIN public.sys_role AS role
@@ -81,5 +99,5 @@ ON CONFLICT (role_id, permission_id) DO NOTHING;
 
 COMMIT;
 
--- 共初始化 2 个目录、1 个菜单、9 个接口/操作权限；目录和菜单不隐式授予子权限。
+-- 共初始化 2 个目录、1 个菜单、15 个接口/操作权限；目录和菜单不隐式授予子权限。
 -- 已登录用户须撤销旧 Redis 会话或重新登录，以读取新的角色与权限快照。

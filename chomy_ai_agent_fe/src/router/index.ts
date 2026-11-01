@@ -8,6 +8,7 @@ import {
   menuTarget,
 } from "../utils/permissions";
 import type { Area } from "../types/api";
+import { workspace } from "../stores/workspace";
 import LoginView from "../views/LoginView.vue";
 import WorkspaceLayout from "../layouts/WorkspaceLayout.vue";
 
@@ -25,6 +26,17 @@ export const router = createRouter({
       children: [
         {
           path: "chat",
+          component: () => import("../views/ChatView.vue"),
+          meta: { area: "frontend" },
+        },
+        // 本地窗口和项目均归属前台，后续列表接口只需替换仓储适配实现。
+        {
+          path: "chat/:chatId",
+          component: () => import("../views/ChatView.vue"),
+          meta: { area: "frontend" },
+        },
+        {
+          path: "projects/:projectId",
           component: () => import("../views/ChatView.vue"),
           meta: { area: "frontend" },
         },
@@ -82,6 +94,22 @@ router.beforeEach(async (to) => {
     }
   }
   const permissions = session.data?.permissions ?? [];
+  // 本地记录只在服务器认证通过后按当前账号加载，禁止通过另一个账号的 URL 打开窗口。
+  workspace.load(session.data?.user.id ?? "");
+  if (
+    to.params.chatId &&
+    !workspace.state.chats.some(
+      (chat) => chat.id === to.params.chatId && !chat.archivedAt,
+    )
+  )
+    return landingPath(permissions);
+  if (
+    to.params.projectId &&
+    !workspace.state.projects.some(
+      (project) => project.id === to.params.projectId,
+    )
+  )
+    return landingPath(permissions);
   const landing = landingPath(permissions);
   if (to.path === "/login" || to.path === "/") return landing;
   if (landing === "/no-access") return to.path === landing ? true : landing;

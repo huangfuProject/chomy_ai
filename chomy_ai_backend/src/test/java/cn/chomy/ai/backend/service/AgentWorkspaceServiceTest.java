@@ -1,0 +1,251 @@
+package cn.chomy.ai.backend.service;
+
+import cn.chomy.ai.backend.common.exception.BizException;
+import cn.chomy.ai.backend.dto.agent.*;
+import cn.chomy.ai.backend.entity.*;
+import cn.chomy.ai.backend.enums.*;
+import cn.chomy.ai.backend.mapper.*;
+import cn.chomy.ai.backend.service.impl.*;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
+import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import java.time.OffsetDateTime;
+import java.util.List;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
+import static org.assertj.core.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.*;
+import static org.mockito.Mockito.*;
+
+/**
+ * 项目和对话业务回归，检查用户隔离、批量关联查询、归属校验及关联删除的调用顺序。
+ * Mapper 使用受控替身，不连接真实数据库；数据库事务及行锁语义由生产事务管理器执行。
+ * @author chomy
+ */
+@SuppressWarnings({"unchecked", "rawtypes"})
+class AgentWorkspaceServiceTest {
+    /** 项目存储边界。 */
+    private AgentProjectMapper projects;
+    /** 对话存储边界。 */
+    private AgentChatMapper chats;
+    /** 真实项目业务。 */
+    private AgentProjectServiceImpl projectService;
+    /** 真实对话业务。 */
+    private AgentChatServiceImpl chatService;
+
+    /** 初始化真实 MyBatis 字段映射及业务服务，隔离外部数据库。 */
+    @BeforeEach
+    void setUp() {
+        for (Class<?> type : List.of(AgentProject.class, AgentChat.class)) {
+            TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "agent-test"), type);
+        }
+        projects = mock(AgentProjectMapper.class);
+        chats = mock(AgentChatMapper.class);
+        projectService = new AgentProjectServiceImpl(projects, chats);
+        chatService = new AgentChatServiceImpl(chats, projects);
+    }
+
+    /** 同名项目不得判重，所有者由认证参数指定，并返回数据库创建时间。 */
+    @Test
+    void allowsDuplicateProjectNames() {
+        when(projects.insert(any(AgentProject.class))).thenAnswer(call -> {
+            AgentProject row = call.getArgument(0); row.setId(10L); return 1;
+        });
+        AgentProject stored = project(10L, "同名项目");
+        when(projects.selectById(10L)).thenReturn(stored);
+        for (int i = 0; i < 2; i++) {
+            assertThat(projectService.createProject(1L, new CreateAgentProjectRequest(" 同名项目 ", "介绍"))).isSameAs(stored);
+        }
+        ArgumentCaptor<AgentProject> capture = ArgumentCaptor.forClass(AgentProject.class);
+        verify(projects, times(2)).insert(capture.capture());
+        assertThat(capture.getAllValues()).allSatisfy(row -> {
+            assertThat(row.getUserId()).isEqualTo(1L);
+            assertThat(row.getProjectName()).isEqualTo("同名项目");
+        });
+        verify(projects, never()).selectCount(any());
+    }
+
+    /** 拒绝无效身份和空白名称，服务层也不能绕过表单边界。 */
+    @Test
+    void rejectsInvalidProjectBeforeWriting() {
+        assertThatThrownBy(() -> projectService.createProject(null, new CreateAgentProjectRequest("项目", null))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> projectService.createProject(1L, new CreateAgentProjectRequest("  ", null))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> projectService.createProject(1L, new CreateAgentProjectRequest("a".repeat(129), null))).isInstanceOf(BizException.class);
+        verifyNoInteractions(projects, chats);
+    }
+
+    /** 无所有权和记录不存在使用同一错误，不应继续删除任何对话。 */
+    @Test
+    void cannotDeleteForeignProject() {
+        when(projects.selectOne(any(Wrapper.class))).thenReturn(null);
+        assertThatThrownBy(() -> projectService.deleteProject(1L, 20L)).hasMessage("项目不存在或无权访问");
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        verify(projects).selectOne(capture.capture());
+        assertOwned(capture.getValue(), "user_id", 1L);
+        assertThat(capture.getValue().getSqlSegment()).contains("FOR UPDATE", "id =");
+        verifyNoInteractions(chats);
+        verify(projects, never()).delete(any(Wrapper.class));
+    }
+
+    /** 项目行锁、全部对话删除、项目删除依次执行，不能遗漏归档对话。 */
+    @Test
+    void deletesAllProjectChatsBeforeProject() {
+        when(projects.selectOne(any(Wrapper.class))).thenReturn(project(10L, "项目"));
+        when(projects.delete(any(Wrapper.class))).thenReturn(1);
+        assertThat(projectService.deleteProject(1L, 10L)).contains("全部对话");
+        var order = inOrder(projects, chats);
+        order.verify(projects).selectOne(any(Wrapper.class));
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        order.verify(chats).delete(capture.capture());
+        // 删除条件仅按项目标识，覆盖所有归档状态和类型，清理整个关联集合。
+        assertThat(capture.getValue().getSqlSegment()).contains("project_id =").doesNotContain("archived", "type");
+        order.verify(projects).delete(any(Wrapper.class));
+    }
+
+    /** 对话单条删除必须同时包含用户条件，不存在或属于他人时不能报告成功。 */
+    @Test
+    void chatDeletionAlwaysChecksOwner() {
+        when(chats.delete(any(Wrapper.class))).thenReturn(0);
+        assertThatThrownBy(() -> chatService.deleteChat(1L, 99L)).hasMessage("对话不存在或无权访问");
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        verify(chats).delete(capture.capture());
+        assertOwned(capture.getValue(), "user_id", 1L);
+        assertOwned(capture.getValue(), "id", 99L);
+        verifyNoInteractions(projects);
+    }
+
+    /** 归档页混合有项目和无项目对话，只查询一次项目名称且保留分页元数据。 */
+    @Test
+    void archivedPageIncludesNullableProjectNameAndStableOrder() {
+        AgentChat first = chat(101L, 10L); AgentChat second = chat(100L, null);
+        when(chats.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> {
+            Page<AgentChat> page = call.getArgument(0);
+            page.setTotal(41); page.setRecords(List.of(first, second)); return page;
+        });
+        when(projects.selectList(any(Wrapper.class))).thenReturn(List.of(project(10L, "同名项目")));
+        AgentPageQuery query = new AgentPageQuery(); query.setCurrent(2L); query.setSize(2L);
+        var result = chatService.archivedChats(1L, query);
+        assertThat(result.getTotal()).isEqualTo(41); assertThat(result.getCurrent()).isEqualTo(2);
+        assertThat(result.getSize()).isEqualTo(2);
+        assertThat(result.getRecords()).extracting(AgentChatView::projectName).containsExactly("同名项目", null);
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        verify(chats).selectPage(any(Page.class), capture.capture());
+        assertOwned(capture.getValue(), "user_id", 1L);
+        assertOwned(capture.getValue(), "archived", AgentChatArchiveStatus.ARCHIVED);
+        assertThat(capture.getValue().getSqlSegment()).contains("ORDER BY created_at DESC,id DESC");
+        verify(projects).selectList(capture.capture());
+        assertOwned(capture.getValue(), "user_id", 1L);
+        assertThat(capture.getValue().getSqlSegment()).contains("id IN");
+    }
+
+    /** 非项目分页必须同时要求空项目 ID 和无项目类型，空页不查询项目表。 */
+    @Test
+    void standalonePageUsesBothMembershipConditions() {
+        when(chats.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> call.getArgument(0));
+        assertThat(chatService.standaloneChats(1L, new AgentPageQuery()).getRecords()).isEmpty();
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        verify(chats).selectPage(any(Page.class), capture.capture());
+        assertOwned(capture.getValue(), "user_id", 1L);
+        assertOwned(capture.getValue(), "type", AgentChatType.STANDALONE);
+        assertThat(capture.getValue().getSqlSegment()).contains("project_id IS NULL").doesNotContain("archived");
+        verifyNoInteractions(projects);
+    }
+
+    /** 查询项目页前必须验证项目所有者，拒绝后不得继续查询对话。 */
+    @Test
+    void projectPageRejectsForeignProject() {
+        assertThatThrownBy(() -> chatService.projectChats(1L, 50L, new AgentPageQuery())).hasMessage("项目不存在或无权访问");
+        verifyNoInteractions(chats);
+    }
+
+    /** 内部创建也必须严格遵守类型和项目 ID 的互斥规则，不能将空类型转换为默认值。 */
+    @Test
+    void rejectsInconsistentChatMembership() {
+        assertThatThrownBy(() -> chatService.createChat(1L, null, "对话", null)).hasMessage("对话类型不能为空");
+        assertThatThrownBy(() -> chatService.createChat(1L, null, "对话", AgentChatType.PROJECT)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.createChat(1L, 10L, "对话", AgentChatType.STANDALONE)).hasMessage("无项目对话不能指定项目");
+        verifyNoInteractions(projects, chats);
+    }
+
+    /** 不得为他人项目创建对话，项目检查失败后不允许写入。 */
+    @Test
+    void cannotCreateChatInForeignProject() {
+        assertThatThrownBy(() -> chatService.createChat(1L, 10L, "对话", AgentChatType.PROJECT)).hasMessage("项目不存在或无权访问");
+        verifyNoInteractions(chats);
+    }
+
+    /** 同名对话允许重复写入，项目行锁必须先于插入，以便与项目删除互斥。 */
+    @Test
+    void createsDuplicateChatNamesUnderProjectLock() {
+        when(projects.selectOne(any(Wrapper.class))).thenReturn(project(10L, "项目"));
+        when(chats.insert(any(AgentChat.class))).thenAnswer(call -> {
+            AgentChat row = call.getArgument(0); row.setId(100L); return 1;
+        });
+        when(chats.selectById(100L)).thenReturn(chat(100L, 10L));
+        for (int i = 0; i < 2; i++) { chatService.createChat(1L, 10L, "同名对话", AgentChatType.PROJECT); }
+        var order = inOrder(projects, chats);
+        ArgumentCaptor<Wrapper> lock = ArgumentCaptor.forClass(Wrapper.class);
+        order.verify(projects).selectOne(lock.capture());
+        assertOwned(lock.getValue(), "user_id", 1L);
+        assertThat(lock.getValue().getSqlSegment()).contains("FOR UPDATE");
+        order.verify(chats).insert(any(AgentChat.class));
+        ArgumentCaptor<AgentChat> inserted = ArgumentCaptor.forClass(AgentChat.class);
+        verify(chats, times(2)).insert(inserted.capture());
+        assertThat(inserted.getAllValues()).allSatisfy(row -> {
+            assertThat(row.getChatName()).isEqualTo("同名对话");
+            assertThat(row.getArchived()).isEqualTo(AgentChatArchiveStatus.UNARCHIVED);
+            assertThat(row.getUserId()).isEqualTo(1L);
+        });
+    }
+
+    /** 分页规模在服务内部同样受限，不能以超大页码或空规模绕过 HTTP 校验。 */
+    @Test
+    void rejectsInvalidPageParameters() {
+        for (long size : new long[]{0, 101}) {
+            AgentPageQuery query = new AgentPageQuery(); query.setSize(size);
+            assertThatThrownBy(() -> chatService.archivedChats(1L, query)).hasMessage("分页参数不合法");
+        }
+        AgentPageQuery query = new AgentPageQuery(); query.setCurrent(null);
+        assertThatThrownBy(() -> chatService.standaloneChats(1L, query)).hasMessage("分页参数不合法");
+        verifyNoInteractions(projects, chats);
+    }
+
+    /**
+     * 核对 SQL 字段条件和绑定值，避免测试替身无视查询条件而掩盖越权。
+     * @param wrapper 实际生成的 MyBatis 条件
+     * @param column 应限制的字段
+     * @param value 期望绑定值
+     */
+    private void assertOwned(Wrapper wrapper, String column, Object value) {
+        String sql = wrapper.getSqlSegment();
+        assertThat(sql).contains(column + " =");
+        assertThat(((AbstractWrapper<?, ?, ?>) wrapper).getParamNameValuePairs()).containsValue(value);
+    }
+
+    /**
+     * 构造固定用户的项目记录。
+     * @param id 项目 ID
+     * @param name 允许重复的名称
+     * @return 测试项目
+     */
+    private AgentProject project(Long id, String name) {
+        AgentProject row = new AgentProject(); row.setId(id); row.setUserId(1L); row.setProjectName(name);
+        row.setCreatedAt(OffsetDateTime.parse("2026-11-01T12:00:00+08:00")); return row;
+    }
+
+    /**
+     * 构造有或无项目归属的归档对话。
+     * @param id 对话 ID
+     * @param projectId 可空项目 ID
+     * @return 归档测试对话
+     */
+    private AgentChat chat(Long id, Long projectId) {
+        AgentChat row = new AgentChat(); row.setId(id); row.setUserId(1L); row.setProjectId(projectId);
+        row.setChatName("同名对话"); row.setType(projectId == null ? AgentChatType.STANDALONE : AgentChatType.PROJECT);
+        row.setArchived(AgentChatArchiveStatus.ARCHIVED); return row;
+    }
+}

@@ -1003,3 +1003,487 @@ dd {
     scroll-behavior: auto !important;
   }
 }
+
+/* 三段侧栏：聊天和项目列表独立组织，中间区域滚动，底部账号始终留在可见位置。 */
+.sidebar-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  padding-bottom: 18px;
+}
+.sidebar-top {
+  padding-bottom: 25px;
+  gap: 6px;
+}
+.sidebar-close {
+  flex-shrink: 0;
+  color: #7b8573;
+}
+.new-chat {
+  width: 100%;
+  text-align: left;
+}
+.button-trailing {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: #8a9581;
+}
+.sidebar-section + .sidebar-section {
+  border-top: 1px solid #e5e9df;
+  margin-top: 22px;
+  padding-top: 20px;
+}
+.section-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px 12px;
+  color: #8a9480;
+}
+.section-heading h2 {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 1px;
+  margin: 0;
+}
+.section-heading > span {
+  font-size: 10px;
+}
+.sidebar-list-empty {
+  font-size: 10px;
+  color: #8e9984;
+  line-height: 1.8;
+  padding: 9px 12px;
+  margin: 2px 0 0;
+}
+.conversation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 10px;
+}
+.conversation-list a,
+.project-conversations a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #626f57;
+  min-width: 0;
+}
+.conversation-list a svg,
+.project-conversations a svg {
+  flex-shrink: 0;
+  color: #8e9b81;
+}
+.conversation-list a span,
+.project-conversations a span,
+.project-folder-row a span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-list a:hover,
+.project-conversations a:hover,
+.conversation-list .router-link-exact-active,
+.project-conversations .router-link-exact-active {
+  background: #e8eee1;
+  color: #38552a;
+}
+.new-project {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 12px;
+  font-size: 12px;
+  color: #536b46;
+  border-radius: 8px;
+  width: 100%;
+}
+.new-project:hover {
+  background: #edf1e6;
+}
+.project-list {
+  margin-top: 7px;
+}
+.project-folder {
+  margin-bottom: 5px;
+}
+.project-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  border-radius: 8px;
+  min-width: 0;
+  padding: 3px 2px;
+}
+.project-folder-row:hover,
+.active-project {
+  background: #edf1e7;
+}
+.folder-chevron {
+  display: flex;
+  align-items: center;
+  padding: 7px 2px;
+  border-radius: 5px;
+  color: #8e9d80;
+}
+.folder-chevron svg {
+  transition: transform 0.15s;
+}
+.folder-chevron .folder-expanded {
+  transform: rotate(90deg);
+}
+.project-folder-row a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 8px 2px;
+  color: #596f4d;
+}
+.project-folder-row a svg {
+  flex-shrink: 0;
+}
+.project-add-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  width: 27px;
+  height: 27px;
+  flex-shrink: 0;
+  color: #839775;
+}
+.project-add-chat:hover {
+  background: #dfe8d4;
+  color: #425e31;
+}
+.project-conversations {
+  border-left: 1px solid #dfe5d7;
+  margin: 3px 0 10px 24px;
+  padding-left: 6px;
+}
+.project-conversations a {
+  padding: 9px 7px;
+  font-size: 11px;
+}
+.project-conversations .sidebar-list-empty {
+  font-size: 9px;
+  padding: 6px 7px;
+}
+.account-section {
+  flex-shrink: 0;
+  margin-top: auto;
+}
+.account-popover {
+  max-height: calc(100dvh - 110px);
+  display: flex;
+  flex-direction: column;
+}
+.account-menu-list {
+  overflow-y: auto;
+  min-height: 0;
+}
+.account-menu-list a {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 10px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+.account-menu-list a:hover,
+.account-menu-list .router-link-active {
+  background: #f2f4ed;
+}
+.account-menu-list a svg {
+  flex-shrink: 0;
+}
+.account-menu-list a span {
+  overflow-wrap: anywhere;
+}
+.account-actions {
+  border-top: 1px solid #edf0e7;
+  padding-top: 5px;
+  margin-top: 5px;
+  flex-shrink: 0;
+}
+.storage-warning {
+  margin: 0 5px 10px;
+  color: #9c7a45;
+  font-size: 10px;
+  line-height: 1.7;
+}
+/* 折叠后移除侧栏的键盘交互（组件同步 inert），保留主区展开按钮，桌面宽度全部交还内容。 */
+@media (min-width: 761px) {
+  .workspace.sidebar-collapsed .sidebar {
+    transform: translateX(-100%);
+    visibility: hidden;
+  }
+  .workspace.sidebar-collapsed .workspace-body {
+    margin-left: 0;
+  }
+}
+@media (max-width: 760px) {
+  .sidebar {
+    visibility: hidden;
+  }
+  .sidebar.is-open {
+    visibility: visible;
+  }
+}
+/* 新项目表单使用原生 dialog；内容可滚动，移动端键盘出现时不遮挡底部操作。 */
+.project-dialog {
+  border: 1px solid #dfe5d7;
+  border-radius: 20px;
+  width: min(460px, calc(100% - 36px));
+  padding: 28px;
+  color: #303a29;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+}
+.project-dialog::backdrop {
+  background: #1e2e1855;
+  backdrop-filter: blur(3px);
+}
+.project-dialog-icon {
+  display: inline-flex;
+  padding: 12px;
+  border-radius: 13px;
+  color: #627d4d;
+  background: #f1f5eb;
+}
+.project-dialog h2 {
+  font-size: 22px;
+  font-weight: 550;
+  margin: 22px 0 10px;
+}
+.project-dialog .muted {
+  font-size: 12px;
+  margin-bottom: 25px;
+}
+.project-dialog label {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  margin: 20px 0 10px;
+}
+.project-dialog label span {
+  font-size: 10px;
+  color: #939f87;
+}
+.project-dialog input,
+.project-dialog textarea {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #dde5d4;
+  border-radius: 10px;
+  background: white;
+  color: #39492e;
+  font-size: 13px;
+}
+.project-dialog textarea {
+  resize: vertical;
+  min-height: 90px;
+  max-height: 240px;
+  line-height: 1.8;
+}
+.project-dialog input:focus,
+.project-dialog textarea:focus {
+  border-color: #849d70;
+}
+.character-count {
+  display: block;
+  text-align: right;
+  font-size: 10px;
+  margin-top: 6px;
+  color: #9ba58f;
+}
+.project-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 16px;
+  align-items: center;
+  margin-top: 24px;
+}
+.project-dialog-actions .primary {
+  padding: 11px 24px;
+  font-size: 12px;
+}
+.chat-welcome h1,
+.chat-welcome > p {
+  overflow-wrap: anywhere;
+}
+.chat-welcome > p {
+  max-width: 660px;
+  white-space: pre-wrap;
+}
+@media (max-width: 760px) {
+  .chat-welcome > p {
+    max-width: 290px;
+  }
+}
+
+/* 聊天条目与右侧省略号分离，保持 ChatGPT 式紧凑导航；移动端无需悬停即可触发。 */
+.conversation-row {
+  display: flex;
+  align-items: center;
+  border-radius: 8px;
+  min-width: 0;
+}
+.conversation-row > a {
+  flex: 1;
+  min-width: 0;
+  padding-right: 4px;
+}
+.conversation-row:hover,
+.conversation-row:has(.router-link-exact-active) {
+  background: #e8ede3;
+}
+.conversation-row > a:hover,
+.conversation-row > .router-link-exact-active {
+  background: transparent;
+}
+.item-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 4px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  color: #7c8973;
+}
+.item-menu-trigger:hover,
+.item-menu-trigger.menu-is-open {
+  background: #dfe7d7;
+  color: #344a29;
+}
+.conversation-row > .item-menu-trigger {
+  margin-right: 4px;
+}
+.project-section-heading {
+  padding: 0 0 10px;
+}
+.project-section-heading .item-menu-trigger {
+  width: auto;
+  gap: 7px;
+  height: 32px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #727f68;
+}
+.project-conversations {
+  border-left: 0;
+  padding-left: 0;
+  margin-left: 25px;
+}
+.project-folder-row > a {
+  gap: 7px;
+}
+.project-folder-row .item-menu-trigger {
+  width: 25px;
+}
+/* 浮层固定在窗口内，绕过侧栏的滚动裁剪；键盘焦点、危险操作和菜单分组清晰可辨。 */
+.sidebar-action-menu {
+  position: fixed;
+  z-index: 100;
+  width: min(234px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: 7px;
+  background: #fff;
+  border: 1px solid #e2e6de;
+  border-radius: 16px;
+  box-shadow:
+    0 10px 42px #1c2d2024,
+    0 2px 8px #1c2d2010;
+}
+.sidebar-action-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 12px;
+  border-radius: 9px;
+  width: 100%;
+  font-size: 13px;
+  text-align: left;
+  min-height: 40px;
+}
+.sidebar-action-menu > button svg {
+  flex-shrink: 0;
+}
+.sidebar-action-menu > button:hover,
+.sidebar-action-menu > button:focus-visible {
+  background: #f0f3ed;
+  outline: none;
+}
+.action-menu-separator {
+  height: 1px;
+  margin: 6px 7px;
+  background: #e7eae3;
+}
+.danger-action {
+  color: #c44e48 !important;
+}
+.sidebar-action-menu > .danger-action:hover,
+.sidebar-action-menu > .danger-action:focus-visible {
+  background: #fdf0ee;
+}
+.resource-action-dialog .dialog-heading h2 {
+  margin: 0;
+  font-size: 20px;
+}
+.resource-action-dialog select {
+  width: 100%;
+  border: 1px solid #dde5d4;
+  padding: 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  background: white;
+  color: #39492e;
+}
+.delete-explanation {
+  font-size: 13px;
+  line-height: 1.9;
+  color: #77806e;
+  margin: 24px 0;
+  overflow-wrap: anywhere;
+}
+.primary.danger-button {
+  background: #c54f48;
+}
+.primary.danger-button:hover {
+  background: #ac403a;
+}
+.share-placeholder {
+  margin-top: 28px;
+}
+.archived-list {
+  margin-top: 24px;
+  max-height: 50dvh;
+  overflow-y: auto;
+}
+.archived-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 8px 0;
+  border-bottom: 1px solid #edf0e8;
+}
+.archived-row > span {
+  flex: 1;
+  font-size: 13px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

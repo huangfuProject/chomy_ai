@@ -1,5 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import { workspace } from "../stores/workspace";
 import {
   ArrowUp,
   Sparkles,
@@ -11,7 +13,24 @@ import {
 } from "lucide-vue-next";
 import BrandMark from "../components/BrandMark.vue";
 
-const draft = ref(""),
+const route = useRoute(),
+  router = useRouter();
+// 路由切换时旧组件仍会执行卸载保存，捕获本窗口 ID，避免把旧草稿写入新窗口。
+const chatId =
+  typeof route.params.chatId === "string" ? route.params.chatId : undefined;
+const projectId =
+  typeof route.params.projectId === "string"
+    ? route.params.projectId
+    : undefined;
+const currentChat = computed(() =>
+  workspace.state.chats.find((chat) => chat.id === chatId),
+);
+const currentProject = computed(() =>
+  workspace.state.projects.find(
+    (project) => project.id === (currentChat.value?.projectId || projectId),
+  ),
+);
+const draft = ref(currentChat.value?.draft || ""),
   notice = ref(""),
   composer = ref<HTMLTextAreaElement | null>(null);
 const suggestions = [
@@ -39,9 +58,24 @@ function choosePrompt(prompt: string) {
   draft.value = prompt;
   composer.value?.focus();
 }
-function send() {
+/** 未建立窗口时先创建独立/项目窗口，再保留草稿；不调用尚未定义的聊天接口。 */
+async function send() {
   if (!draft.value.trim()) return;
-  notice.value = "聊天服务暂未开放，你可以先保留这份灵感，稍后再来。";
+  try {
+    if (!currentChat.value) {
+      const chat = workspace.createChat(
+        currentProject.value?.id ?? null,
+        draft.value,
+      );
+      workspace.saveDraft(chat.id, draft.value, true);
+      await router.push({ path: `/chat/${chat.id}`, query: { pending: "1" } });
+      return;
+    }
+    workspace.saveDraft(currentChat.value.id, draft.value, true);
+    notice.value = "聊天服务暂未开放，你的草稿已保留在当前聊天窗口。";
+  } catch (cause) {
+    notice.value = cause instanceof Error ? cause.message : "暂时无法保存草稿";
+  }
 }
 /** 输入法组合期间不处理 Enter，Shift+Enter 保留多行输入。 */
 function onKeydown(event: KeyboardEvent) {
@@ -50,22 +84,53 @@ function onKeydown(event: KeyboardEvent) {
     send();
   }
 }
-function reset() {
-  draft.value = "";
-  notice.value = "";
-  composer.value?.focus();
+// 每个窗口使用独立草稿；防抖减少本地存储写入，离开窗口时立即保存最后一次输入。
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+function saveCurrentDraft() {
+  if (!currentChat.value) return;
+  try {
+    workspace.saveDraft(currentChat.value.id, draft.value);
+  } catch (cause) {
+    notice.value = cause instanceof Error ? cause.message : "草稿保存失败";
+  }
 }
-window.addEventListener("new-chat", reset);
-onBeforeUnmount(() => window.removeEventListener("new-chat", reset));
+watch(draft, () => {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveCurrentDraft, 250);
+});
+if (route.query.pending === "1") {
+  notice.value = "聊天服务暂未开放，你的草稿已保留在当前聊天窗口。";
+  // 提示只在本次创建窗口后显示，移除一次性标记避免刷新时反复触发。
+  void router.replace({ path: route.path });
+}
+onBeforeUnmount(() => {
+  clearTimeout(saveTimer);
+  saveCurrentDraft();
+});
 </script>
 
 <template>
   <main class="chat-page">
     <section class="chat-welcome">
       <div class="welcome-symbol"><BrandMark :size="43" /></div>
-      <div class="eyebrow">一点好奇，无限可能</div>
-      <h1>今天，有什么新想法？</h1>
-      <p>写作、思考、探索。让 Chomy AI 陪你迈出第一步。</p>
+      <div class="eyebrow">
+        {{ currentProject ? "项目工作空间" : "一点好奇，无限可能" }}
+      </div>
+      <h1>
+        {{
+          currentChat && currentChat.title !== "新聊天"
+            ? currentChat.title
+            : currentProject?.name || "今天，有什么新想法？"
+        }}
+      </h1>
+      <p>
+        {{
+          currentProject?.description ||
+          (currentProject
+            ? "从一个新对话开始，探索这个项目的更多可能。"
+            : "写作、思考、探索。让 Chomy AI 陪你迈出第一步。")
+        }}
+      </p>
     </section>
     <div class="chat-content">
       <form class="composer" @submit.prevent="send">

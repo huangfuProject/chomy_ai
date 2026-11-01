@@ -23,12 +23,12 @@ import static org.mockito.Mockito.*;
  * @author chomy
  */
 class BusinessEnumMappingTest {
-    /** 六种业务枚举的 JSON 表达仍为整数编码，不改变前端或现有 Redis 数字数据的格式。 */
+    /** 全部业务枚举的 JSON 表达仍为整数编码，不改变前端或现有 Redis 数字数据的格式。 */
     @Test
     void roundTripsAllBusinessEnumsAsNumbers() throws Exception {
         ObjectMapper mapper = new ObjectMapper();
         for (CodeEnum value : List.of(Gender.FEMALE, UserCreateType.SELF_REGISTERED,
-                UserStatus.FROZEN, ActivationStatus.ACTIVE, EnableStatus.DISABLED, PermissionType.API)) {
+                UserStatus.FROZEN, ActivationStatus.ACTIVE, EnableStatus.DISABLED, PermissionType.API, AgentChatType.PROJECT, AgentChatArchiveStatus.ARCHIVED)) {
             String json = mapper.writeValueAsString(value);
             assertThat(json).isEqualTo(value.getCode().toString());
             assertThat(mapper.readValue(json, value.getClass())).isSameAs(value);
@@ -77,4 +77,24 @@ class BusinessEnumMappingTest {
         assertThat(new User().getStatus()).isNull();
         assertThat(new User().getActived()).isNull();
     }
+    /** 新增对话枚举使用严格数字协议，JSON 与 MyBatis 实际绑定均不得依赖 ordinal。 */
+    @Test
+    void agentChatEnumsRejectInvalidJsonAndBindNumericCodes() throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        for (Class<?> type : List.of(AgentChatType.class, AgentChatArchiveStatus.class)) {
+            for (String json : List.of("99", "-1", "1.5", "\"1\"", "\"PROJECT\"", "true", "2147483648")) {
+                assertThatThrownBy(() -> mapper.readValue(json, type)).isInstanceOf(com.fasterxml.jackson.core.JsonProcessingException.class);
+            }
+            assertThat(mapper.readValue("null", type)).isNull();
+        }
+        var typeHandler = new MybatisConfiguration().getTypeHandlerRegistry().getTypeHandler(AgentChatType.class);
+        var archiveHandler = new MybatisConfiguration().getTypeHandlerRegistry().getTypeHandler(AgentChatArchiveStatus.class);
+        PreparedStatement statement = mock(PreparedStatement.class);
+        // 验证真实类型处理器，而非仅检查注解存在。
+        typeHandler.setParameter(statement, 1, AgentChatType.PROJECT, JdbcType.SMALLINT);
+        archiveHandler.setParameter(statement, 2, AgentChatArchiveStatus.ARCHIVED, JdbcType.SMALLINT);
+        verify(statement).setObject(1, 1, Types.SMALLINT);
+        verify(statement).setObject(2, 1, Types.SMALLINT);
+    }
+
 }

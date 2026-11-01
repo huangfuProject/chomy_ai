@@ -1,5 +1,15 @@
 package cn.chomy.ai.backend.security;
 
+import cn.chomy.ai.backend.controller.user.AgentProjectController;
+import cn.chomy.ai.backend.controller.user.AgentChatController;
+import cn.chomy.ai.backend.service.AgentProjectService;
+import cn.chomy.ai.backend.service.AgentChatService;
+import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
+import cn.chomy.ai.backend.dto.agent.AgentPageQuery;
+import cn.chomy.ai.backend.enums.AgentPermission;
+import org.springframework.security.access.AccessDeniedException;
+
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -413,6 +423,89 @@ class SecurityIntegrationTest {
                 .content("{\"newPassword\":\"ChangedPass123!\"}")).andExpect(status().isForbidden());
     }
 
+    /** 六个项目及对话接口必须与真实 SQL 权限一一对应，用户 ID 来自 JWT 而非表单。 */
+    @Test
+    void agentEndpointsMatchSeedAndUseJwtOwner() throws Exception {
+        grantAgentPermissions(AgentPermission.values());
+        when(store.agentChats.projectChats(anyLong(), anyLong(), any())).thenReturn(new Page<>());
+        when(store.agentChats.standaloneChats(anyLong(), any())).thenReturn(new Page<>());
+        when(store.agentChats.archivedChats(anyLong(), any())).thenReturn(new Page<>());
+        when(store.agentChats.deleteChat(anyLong(), anyLong())).thenReturn("对话已删除");
+        when(store.agentProjects.deleteProject(anyLong(), anyLong())).thenReturn("项目及其全部对话已删除");
+        String token = login();
+        // 故意附带其他用户 ID，Controller 仍必须将认证用户 1 传给 Service。
+        mvc.perform(post("/user/agent/projects").header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"projectName\":\"项目\",\"userId\":999}"))
+                .andExpect(status().isOk());
+        verify(store.agentProjects).createProject(eq(1L), any(CreateAgentProjectRequest.class));
+        mvc.perform(get("/user/agent/projects/10/chats").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        verify(store.agentChats).projectChats(eq(1L), eq(10L), any(AgentPageQuery.class));
+        mvc.perform(get("/user/agent/chats/standalone").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        verify(store.agentChats).standaloneChats(eq(1L), any(AgentPageQuery.class));
+        mvc.perform(get("/user/agent/chats/archived").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        verify(store.agentChats).archivedChats(eq(1L), any(AgentPageQuery.class));
+        mvc.perform(delete("/user/agent/chats/100").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        verify(store.agentChats).deleteChat(1L, 100L);
+        mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        verify(store.agentProjects).deleteProject(1L, 10L);
+    }
+
+    /** 未登录返回 401，已登录但未授权返回 403，拥有查询权限也不能删除数据。 */
+    @Test
+    void agentEndpointsRequireIndependentPermissions() throws Exception {
+        mvc.perform(get("/user/agent/chats/archived")).andExpect(status().isUnauthorized());
+        grantAgentPermissions(AgentPermission.ARCHIVED_CHATS);
+        String token = login();
+        mvc.perform(post("/user/agent/projects").header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"projectName\":\"项目\"}")).andExpect(status().isForbidden());
+        mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
+        mvc.perform(delete("/user/agent/chats/100").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
+        verifyNoInteractions(store.agentProjects, store.agentChats);
+        // 非 HTTP 入口仍经过接口声明的服务层权限，不能以单独查询权限执行删除。
+        var authentication = context.getBean(JwtSessionService.class).authenticate(context.getBean(JwtDecoder.class).decode(token));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class).deleteChat(1L, 100L))
+                    .isInstanceOf(AccessDeniedException.class);
+        } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
+    }
+
+    /** 表单和页码校验失败应返回 400，不能将非法参数交给业务层。 */
+    @Test
+    void agentEndpointsValidateInputs() throws Exception {
+        grantAgentPermissions(AgentPermission.values());
+        String token = login();
+        mvc.perform(post("/user/agent/projects").header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"projectName\":\"  \"}")).andExpect(status().isBadRequest());
+        mvc.perform(get("/user/agent/chats/archived?size=101").header("Authorization", "Bearer " + token)).andExpect(status().isBadRequest());
+        mvc.perform(delete("/user/agent/chats/0").header("Authorization", "Bearer " + token)).andExpect(status().isBadRequest());
+        verifyNoInteractions(store.agentProjects, store.agentChats);
+    }
+
+    /**
+     * 从真实 V2 提取六个 Agent 接口资源，只向测试账户授予指定权限。
+     * @param granted 本次测试允许的独立权限
+     */
+    private void grantAgentPermissions(AgentPermission... granted) throws Exception {
+        String sql = java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
+                "sql", "V2__init_rbac_and_user_data.sql"));
+        List<Permission> resources = new ArrayList<>();
+        // 使用种子中真实路径和方法，避免测试自行声明一套与部署数据不同的权限。
+        var matcher = Pattern.compile("\\((\\d+), '(agent:[^']+)', '[^']+', '([^']+)', '([A-Z]+)',").matcher(sql);
+        while (matcher.find()) {
+            resources.add(api(Long.valueOf(matcher.group(1)), matcher.group(2), matcher.group(3), matcher.group(4)));
+        }
+        assertThat(resources).hasSize(AgentPermission.values().length);
+        assertThat(resources.stream().map(Permission::getPermissionCode)).containsExactlyInAnyOrder(
+                Arrays.stream(AgentPermission.values()).map(AgentPermission::getCode).toArray(String[]::new));
+        Set<String> codes = Arrays.stream(granted).map(AgentPermission::getCode).collect(java.util.stream.Collectors.toSet());
+        when(store.permissions.selectList(any(Wrapper.class))).thenAnswer(call -> {
+            Wrapper<Permission> wrapper = call.getArgument(0);
+            return wrapper.getSqlSegment().contains("permission_type") ? resources
+                    : resources.stream().filter(permission -> codes.contains(permission.getPermissionCode())).toList();
+        });
+    }
+
     /** 从真实 V2 SQL 种子提取接口定义，让 HTTP 测试与实际导入权限数据保持一致。 */
     private List<Permission> adminResources() throws Exception {
         String sql = java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
@@ -479,7 +572,7 @@ class SecurityIntegrationTest {
     @EnableWebSecurity
     @EnableWebMvc
     @Import({SecurityConfig.class, WebMvcConfig.class, LoginInterceptor.class, SecurityResponseHandler.class, JwtSessionService.class, RbacUserDetailsService.class,
-            RbacAuthorizationManager.class, LoginController.class, UserInfoController.class, UserController.class, UserServiceImpl.class, LoginServiceImpl.class,
+            RbacAuthorizationManager.class, AgentProjectController.class, AgentChatController.class, LoginController.class, UserInfoController.class, UserController.class, UserServiceImpl.class, LoginServiceImpl.class,
             GlobalResponseAdvice.class, GlobalExceptionHandler.class, CodeEnumBindingAdvice.class, HealthController.class, ProtectedController.class})
     static class TestConfig {
         /** 创建隔离数据容器，测试间不复用密码及登录会话。 */
@@ -498,6 +591,10 @@ class SecurityIntegrationTest {
         @Bean PermissionMapper permissionMapper(TestStore store) { return store.permissions; }
         /** 管理业务替身保留接口上的真实方法级权限，由安全链测试验证调用边界。 */
         @Bean AdminUserService adminUserService(TestStore store) { return store.adminUsers; }
+        /** 项目业务替身，保留接口上的真实方法权限检查。 */
+        @Bean AgentProjectService agentProjectService(TestStore store) { return store.agentProjects; }
+        /** 对话业务替身，保留接口上的真实方法权限检查。 */
+        @Bean AgentChatService agentChatService(TestStore store) { return store.agentChats; }
         /** Redis 内存边界。 */
         @Bean StringRedisTemplate redis(TestStore store) { return store.redis; }
     }
@@ -525,6 +622,10 @@ class SecurityIntegrationTest {
     static class TestStore {
         final User user = new User();
         final Permission permission = new Permission();
+        /** 项目业务调用边界，检验 Controller 只传入 JWT 用户 ID。 */
+        final AgentProjectService agentProjects = mock(AgentProjectService.class);
+        /** 对话业务调用边界。 */
+        final AgentChatService agentChats = mock(AgentChatService.class);
         final AdminUserService adminUsers = mock(AdminUserService.class);
         final UserMapper users = mock(UserMapper.class);
         final UserRoleMapper userRoles = mock(UserRoleMapper.class);

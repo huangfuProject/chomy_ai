@@ -1,26 +1,29 @@
 <script setup lang="ts">
-// 品牌图形使用本地 SVG，不依赖第三方图片、远程字体或 ChatGPT 商标。
+// 统一使用用户提供的透明 PNG，保留原始色彩和透明背景，不裁切或拉伸品牌图案。
+// size 表示显示区域的边长（像素）；各页面继续按原有布局传入大小。
 withDefaults(defineProps<{ size?: number }>(), { size: 32 });
+// 使用 Vite 的基础路径，部署到子目录时也能正确定位公共品牌资源。
+const logoUrl = `${import.meta.env.BASE_URL}brand-logo.png`;
 </script>
+
 <template>
-  <svg
+  <!-- 图案旁已有品牌名称或页面标题，使用空替代文本，避免读屏重复朗读。 -->
+  <img
+    :src="logoUrl"
     :width="size"
     :height="size"
-    viewBox="0 0 40 40"
-    fill="none"
+    alt=""
     aria-hidden="true"
-  >
-    <path
-      d="M20 4 33.86 12v16L20 36 6.14 28V12L20 4Z"
-      stroke="currentColor"
-      stroke-width="2.4"
-      stroke-linejoin="round"
-    />
-    <path
-      d="m20 4 0 32M6.14 12 33.86 28M33.86 12 6.14 28"
-      stroke="currentColor"
-      stroke-width="2.4"
-    />
-    <path d="m13 8 14 24M27 8 13 32" stroke="currentColor" stroke-width="2.4" />
-  </svg>
+    class="brand-mark"
+  />
 </template>
+
+<style scoped>
+/* 保持正方形占位和原图比例；禁止侧栏等 flex 布局压缩图案。 */
+.brand-mark {
+  display: inline-block;
+  object-fit: contain;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+</style>
