@@ -491,7 +491,7 @@ class SecurityIntegrationTest {
                 "sql", "V2__init_rbac_and_user_data.sql"));
         List<Permission> resources = new ArrayList<>();
         // 使用种子中真实路径和方法，避免测试自行声明一套与部署数据不同的权限。
-        var matcher = Pattern.compile("\\((\\d+), '(agent:[^']+)', '[^']+', '([^']+)', '([A-Z]+)',").matcher(sql);
+        var matcher = Pattern.compile("\\((\\d+), \\d+, '(agent:[^']+)', '[^']+', 3, '([^']+)', '([A-Z]+)',").matcher(sql);
         while (matcher.find()) {
             resources.add(api(Long.valueOf(matcher.group(1)), matcher.group(2), matcher.group(3), matcher.group(4)));
         }
@@ -511,8 +511,8 @@ class SecurityIntegrationTest {
         String sql = java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
                 "sql", "V2__init_rbac_and_user_data.sql"));
         List<Permission> result = new ArrayList<>();
-        // 新版种子中九个接口/按钮共用节点采用同一行结构，无独立按钮编码。
-        Pattern operations = Pattern.compile("\\((\\d+), '(user:(?:update|get):[^']+)', '[^']+', '([^']+)', '([A-Z]+)',");
+        // 完整 VALUES 行显式列出父 ID 和类型 3，九个接口/按钮共用节点无独立按钮编码。
+        Pattern operations = Pattern.compile("\\((\\d+), \\d+, '(user:(?:update|get):[^']+)', '[^']+', 3, '([^']+)', '([A-Z]+)',");
         var matcher = operations.matcher(sql);
         while (matcher.find()) { result.add(api(Long.valueOf(matcher.group(1)), matcher.group(2), matcher.group(3), matcher.group(4))); }
         assertThat(result).hasSize(UserManagementPermission.values().length);
