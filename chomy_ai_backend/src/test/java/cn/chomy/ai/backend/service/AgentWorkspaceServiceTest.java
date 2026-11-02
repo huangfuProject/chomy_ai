@@ -9,6 +9,7 @@ import cn.chomy.ai.backend.service.impl.*;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.conditions.AbstractWrapper;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import java.time.OffsetDateTime;
@@ -98,6 +99,77 @@ class AgentWorkspaceServiceTest {
             AgentPageQuery query = new AgentPageQuery(); query.setSize(size);
             assertThatThrownBy(() -> projectService.pageProjects(1L, query)).hasMessage("分页参数不合法");
         }
+        verifyNoInteractions(projects, chats);
+    }
+
+    /** 修改必须同时限制项目和所有者，仅更新名称和介绍，且可显式清空介绍。 */
+    @Test
+    void updatesOnlyOwnedProjectFields() {
+        when(projects.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        assertThat(projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest(" 新名称 ", "")))
+                .isEqualTo("项目已修改");
+        ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(projects).update(isNull(), capture.capture());
+        var update = capture.getValue();
+        assertOwned(update, "id", 10L); assertOwned(update, "user_id", 1L);
+        // SQL SET 列表应只含两个公开字段，NULL 必须真正写入数据库。
+        assertThat(update.getSqlSet()).contains("project_name=", "description=").doesNotContain("user_id", "created_at");
+        assertThat(update.getParamNameValuePairs()).containsValue("新名称").containsValue(null);
+        verifyNoInteractions(chats);
+    }
+
+    /** 项目修改不区分不存在与他人所有，失败时不得触碰对话。 */
+    @Test
+    void rejectsUnownedProjectUpdate() {
+        assertThatThrownBy(() -> projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest("名称", null)))
+                .hasMessage("项目不存在或无权访问");
+        verifyNoInteractions(chats);
+    }
+
+    /** 重命名无归档及类型过滤，只更新名称并同时限制所有者与对话 ID。 */
+    @Test
+    void renamesOnlyOwnedChatName() {
+        when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        assertThat(chatService.renameChat(1L, 100L, new RenameAgentChatRequest(" 新对话 "))).isEqualTo("对话已重命名");
+        ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(chats).update(isNull(), capture.capture());
+        var update = capture.getValue();
+        assertOwned(update, "id", 100L); assertOwned(update, "user_id", 1L);
+        assertThat(update.getSqlSegment()).doesNotContain("archived", "type", "project_id");
+        assertThat(update.getSqlSet()).startsWith("chat_name=").doesNotContain(",", "project_id", "archived", "created_at", "user_id");
+        assertThat(update.getParamNameValuePairs()).containsValue("新对话");
+        verifyNoInteractions(projects);
+    }
+
+    /** 他人或不存在的对话不能重命名，不查询或修改项目。 */
+    @Test
+    void rejectsUnownedChatRename() {
+        assertThatThrownBy(() -> chatService.renameChat(1L, 100L, new RenameAgentChatRequest("新对话")))
+                .hasMessage("对话不存在或无权访问");
+        verifyNoInteractions(projects);
+    }
+
+    /** 修改业务的服务层校验拒绝空白、超长名称和介绍以及非法身份与资源标识。 */
+    @Test
+    void updateServicesValidateInputsBeforeWriting() {
+        assertThatThrownBy(() -> projectService.updateProject(null, 10L, new UpdateAgentProjectRequest("名称", null)))
+                .hasMessage("用户不合法");
+        assertThatThrownBy(() -> chatService.renameChat(1L, 0L, new RenameAgentChatRequest("名称")))
+                .hasMessage("对话不合法");
+        assertThatThrownBy(() -> projectService.updateProject(1L, 0L, new UpdateAgentProjectRequest("名称", null)))
+                .hasMessage("项目不合法");
+        assertThatThrownBy(() -> chatService.renameChat(null, 10L, new RenameAgentChatRequest("名称")))
+                .hasMessage("用户不合法");
+        assertThatThrownBy(() -> projectService.updateProject(1L, 10L, null)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.renameChat(1L, 10L, null)).isInstanceOf(BizException.class);
+        for (String name : new String[]{null, "", "  ", "a".repeat(129)}) {
+            assertThatThrownBy(() -> projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest(name, null)))
+                    .isInstanceOf(BizException.class);
+            assertThatThrownBy(() -> chatService.renameChat(1L, 10L, new RenameAgentChatRequest(name)))
+                    .isInstanceOf(BizException.class);
+        }
+        assertThatThrownBy(() -> projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest("名称", "a".repeat(2001))))
+                .hasMessage("项目介绍不能超过2000个字符");
         verifyNoInteractions(projects, chats);
     }
 

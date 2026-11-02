@@ -31,6 +31,16 @@ public interface AgentProjectService extends IService<AgentProject> {
     AgentProject createProject(Long userId, CreateAgentProjectRequest request);
 
     /**
+     * 修改本人项目的名称和介绍，未提供介绍或空字符串表示清空介绍。
+     * @param userId 已验签 JWT 用户 ID
+     * @param projectId 目标项目 ID
+     * @param request 项目名称与介绍，不允许修改所有者或创建时间
+     * @return 成功提示，不存在或无所有权时抛出业务异常
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).PROJECT_UPDATE.code)")
+    String updateProject(Long userId, Long projectId, UpdateAgentProjectRequest request);
+
+    /**
      * 事务内删除本人项目及其全部对话，包含归档对话。
      * @param userId 已验签 JWT 用户 ID
      * @param projectId 目标项目 ID

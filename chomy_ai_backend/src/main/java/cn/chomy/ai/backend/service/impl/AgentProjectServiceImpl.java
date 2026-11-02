@@ -3,6 +3,7 @@ package cn.chomy.ai.backend.service.impl;
 import cn.chomy.ai.backend.common.exception.BizException;
 import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
 import cn.chomy.ai.backend.dto.agent.AgentPageQuery;
+import cn.chomy.ai.backend.dto.agent.UpdateAgentProjectRequest;
 import cn.chomy.ai.backend.entity.AgentChat;
 import cn.chomy.ai.backend.entity.AgentProject;
 import cn.chomy.ai.backend.mapper.AgentChatMapper;
@@ -77,6 +78,39 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
         AgentProject created = projectMapper.selectById(project.getId());
         if (created == null) { throw new BizException("创建项目失败"); }
         return created;
+    }
+
+    /**
+     * 通过用户与项目 ID 联合条件原子更新白名单字段，不读取后再按裸 ID 更新。
+     * @param userId 当前认证用户 ID
+     * @param projectId 待修改项目 ID
+     * @param request 必填项目名称与可空介绍，空介绍清空为 NULL
+     * @return 修改成功提示
+     * @throws BizException 身份、参数不合法，或项目不存在及不属于本人时抛出
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String updateProject(Long userId, Long projectId, UpdateAgentProjectRequest request) {
+        requireId(userId, "用户不合法");
+        requireId(projectId, "项目不合法");
+        // 服务层重复检查业务边界，防止内部调用绕过 HTTP 参数校验。
+        if (request == null || request.projectName() == null || request.projectName().isBlank()
+                || request.projectName().length() > 128) {
+            throw new BizException("项目名不能为空且不能超过128个字符");
+        }
+        if (request.description() != null && request.description().length() > 2000) {
+            throw new BizException("项目介绍不能超过2000个字符");
+        }
+        // 显式 set 可将介绍更新为 NULL，避免实体的非空更新策略使清空操作失效。
+        // 更新条件始终限制所属用户，且不修改所有者、创建时间或关联对话。
+        int affected = projectMapper.update(null, Wrappers.lambdaUpdate(AgentProject.class)
+                .eq(AgentProject::getId, projectId).eq(AgentProject::getUserId, userId)
+                .set(AgentProject::getProjectName, request.projectName().strip())
+                .set(AgentProject::getDescription,
+                        request.description() == null || request.description().isEmpty() ? null : request.description()));
+        // 对不存在和他人项目使用相同提示，不泄漏其他用户数据是否存在。
+        if (affected != 1) { throw new BizException("项目不存在或无权访问"); }
+        return "项目已修改";
     }
 
     /**

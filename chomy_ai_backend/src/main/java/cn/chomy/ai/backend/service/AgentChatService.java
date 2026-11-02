@@ -51,6 +51,16 @@ public interface AgentChatService extends IService<AgentChat> {
     IPage<AgentChatView> archivedChats(Long userId, AgentPageQuery query);
 
     /**
+     * 重命名本人对话，不限制归档状态或项目归属。
+     * @param userId 已验签 JWT 用户 ID
+     * @param chatId 目标对话 ID
+     * @param request 仅包含新名称的表单
+     * @return 成功提示，不存在或无所有权时抛出业务异常
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).CHAT_RENAME.code)")
+    String renameChat(Long userId, Long chatId, RenameAgentChatRequest request);
+
+    /**
      * 仅删除当前用户自己的对话，不删除项目。
      * @param userId 已验签 JWT 用户 ID
      * @param chatId 目标对话 ID

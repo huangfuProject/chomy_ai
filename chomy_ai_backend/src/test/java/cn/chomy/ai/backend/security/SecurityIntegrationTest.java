@@ -7,6 +7,8 @@ import cn.chomy.ai.backend.service.AgentChatService;
 import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
 import cn.chomy.ai.backend.dto.agent.AgentPageQuery;
 import cn.chomy.ai.backend.enums.AgentPermission;
+import cn.chomy.ai.backend.dto.agent.UpdateAgentProjectRequest;
+import cn.chomy.ai.backend.dto.agent.RenameAgentChatRequest;
 import org.springframework.security.access.AccessDeniedException;
 
 
@@ -423,7 +425,7 @@ class SecurityIntegrationTest {
                 .content("{\"newPassword\":\"ChangedPass123!\"}")).andExpect(status().isForbidden());
     }
 
-    /** 七个项目及对话接口必须与真实 SQL 权限一一对应，用户 ID 来自 JWT 而非表单。 */
+    /** 九个项目及对话接口必须与真实 SQL 权限一一对应，用户 ID 来自 JWT 而非表单。 */
     @Test
     void agentEndpointsMatchSeedAndUseJwtOwner() throws Exception {
         grantAgentPermissions(AgentPermission.values());
@@ -491,6 +493,73 @@ class SecurityIntegrationTest {
         mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + pageToken))
                 .andExpect(status().isForbidden());
         verify(store.agentProjects, never()).deleteProject(anyLong(), anyLong());
+    }
+
+    /** 修改权限使用真实 SQL 路由，认证用户不能被表单中的伪造所有者替换。 */
+    @Test
+    void updateEndpointsUseJwtOwnerAndIndependentPermissions() throws Exception {
+        grantAgentPermissions(AgentPermission.PROJECT_UPDATE);
+        when(store.agentProjects.updateProject(anyLong(), anyLong(), any())).thenReturn("项目已修改");
+        String projectToken = login();
+        mvc.perform(put("/user/agent/projects/10").header("Authorization", "Bearer " + projectToken)
+                .contentType("application/json").content("{\"projectName\":\"新名称\",\"description\":null,\"userId\":999}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data").value("项目已修改"));
+        verify(store.agentProjects).updateProject(eq(1L), eq(10L), eq(new UpdateAgentProjectRequest("新名称", null)));
+        mvc.perform(put("/user/agent/chats/100/name").header("Authorization", "Bearer " + projectToken)
+                .contentType("application/json").content("{\"chatName\":\"新对话\"}"))
+                .andExpect(status().isForbidden());
+        grantAgentPermissions(AgentPermission.CHAT_RENAME);
+        when(store.agentChats.renameChat(anyLong(), anyLong(), any())).thenReturn("对话已重命名");
+        String chatToken = login();
+        mvc.perform(put("/user/agent/chats/100/name").header("Authorization", "Bearer " + chatToken)
+                .contentType("application/json").content("{\"chatName\":\"新对话\",\"userId\":999,\"projectId\":999,\"archived\":0}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data").value("对话已重命名"));
+        verify(store.agentChats).renameChat(eq(1L), eq(100L), eq(new RenameAgentChatRequest("新对话")));
+        mvc.perform(put("/user/agent/projects/10").header("Authorization", "Bearer " + chatToken)
+                .contentType("application/json").content("{\"projectName\":\"新名称\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    /** 未登录和仅有读取权限时拒绝修改，非法表单与 ID 不进入业务服务。 */
+    @Test
+    void updateEndpointsRejectUnauthorizedAndInvalidInputs() throws Exception {
+        for (String path : List.of("/user/agent/projects/10", "/user/agent/chats/100/name")) {
+            mvc.perform(put(path).contentType("application/json").content("{}"))
+                    .andExpect(status().isUnauthorized());
+        }
+        grantAgentPermissions(AgentPermission.PROJECT_PAGE, AgentPermission.PROJECT_CHATS);
+        String readToken = login();
+        for (String path : List.of("/user/agent/projects/10", "/user/agent/chats/100/name")) {
+            mvc.perform(put(path).header("Authorization", "Bearer " + readToken)
+                    .contentType("application/json").content("{}" )).andExpect(status().isForbidden());
+        }
+        // 服务接口仍保留方法级鉴权，非 HTTP 调用也不能借读取权限执行修改。
+        var authentication = context.getBean(JwtSessionService.class).authenticate(context.getBean(JwtDecoder.class).decode(readToken));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentProjectService.class)
+                    .updateProject(1L, 10L, new UpdateAgentProjectRequest("名称", null))).isInstanceOf(AccessDeniedException.class);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class)
+                    .renameChat(1L, 100L, new RenameAgentChatRequest("名称"))).isInstanceOf(AccessDeniedException.class);
+        } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
+        grantAgentPermissions(AgentPermission.PROJECT_UPDATE, AgentPermission.CHAT_RENAME);
+        String token = login();
+        for (String name : List.of("", "  ", "a".repeat(129))) {
+            mvc.perform(put("/user/agent/projects/10").header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content(json.writeValueAsString(new UpdateAgentProjectRequest(name, null))))
+                    .andExpect(status().isBadRequest());
+            mvc.perform(put("/user/agent/chats/100/name").header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content(json.writeValueAsString(new RenameAgentChatRequest(name))))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(put("/user/agent/projects/10").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(json.writeValueAsString(new UpdateAgentProjectRequest("名称", "a".repeat(2001)))))
+                .andExpect(status().isBadRequest());
+        mvc.perform(put("/user/agent/projects/0").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"projectName\":\"名称\"}")).andExpect(status().isBadRequest());
+        mvc.perform(put("/user/agent/chats/0/name").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"chatName\":\"名称\"}")).andExpect(status().isBadRequest());
+        verifyNoInteractions(store.agentProjects, store.agentChats);
     }
 
     /** 表单和页码校验失败应返回 400，不能将非法参数交给业务层。 */

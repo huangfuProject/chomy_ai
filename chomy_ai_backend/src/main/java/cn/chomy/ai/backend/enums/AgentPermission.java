@@ -12,6 +12,10 @@ public enum AgentPermission {
     PROJECT_PAGE("agent:project:page"),
     /** 创建本人项目。 */
     PROJECT_CREATE("agent:project:create"),
+    /** 修改本人项目名称和介绍。 */
+    PROJECT_UPDATE("agent:project:update"),
+    /** 重命名本人对话。 */
+    CHAT_RENAME("agent:chat:rename"),
     /** 删除本人项目及全部对话。 */
     PROJECT_DELETE("agent:project:delete"),
     /** 分页查看本人项目对话。 */

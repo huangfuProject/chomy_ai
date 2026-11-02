@@ -19,7 +19,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/user/agent/chats")
 @RequiredArgsConstructor
 public class AgentChatController {
-    /** 对话分页与删除业务。 */
+    /** 对话分页、重命名与删除业务。 */
     private final AgentChatService chatService;
 
     /**
@@ -44,6 +44,21 @@ public class AgentChatController {
     public IPage<AgentChatView> archived(@AuthenticationPrincipal Jwt jwt, @Valid @ModelAttribute AgentPageQuery query) {
         // 项目名称由业务层查询，Controller 不进行额外数据访问。
         return chatService.archivedChats(Long.valueOf(jwt.getSubject()), query);
+    }
+
+    /**
+     * 重命名本人对话，适用于项目对话、无项目对话及归档对话。
+     * @param jwt 已验签的认证主体
+     * @param chatId 正数对话 ID
+     * @param request 仅包含对话名称的表单
+     * @return 重命名成功提示
+     */
+    @PutMapping("/{chatId}/name")
+    public String rename(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable @Positive(message = "对话ID必须大于零") Long chatId,
+            @Valid @RequestBody RenameAgentChatRequest request) {
+        // 所有权条件与字段白名单由 Service 处理，避免客户端借重命名移动对话或变更归档状态。
+        return chatService.renameChat(Long.valueOf(jwt.getSubject()), chatId, request);
     }
 
     /**

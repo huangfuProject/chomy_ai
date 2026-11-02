@@ -22,7 +22,7 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/user/agent/projects")
 @RequiredArgsConstructor
 public class AgentProjectController {
-    /** 项目分页、创建与事务删除业务。 */
+    /** 项目分页、创建、修改与事务删除业务。 */
     private final AgentProjectService projectService;
     /** 项目对话分页业务。 */
     private final AgentChatService chatService;
@@ -63,6 +63,21 @@ public class AgentProjectController {
             @PathVariable @Positive(message = "项目ID必须大于零") Long projectId, @Valid @ModelAttribute AgentPageQuery query) {
         // 项目所有权检查和排序统一交给业务服务。
         return chatService.projectChats(Long.valueOf(jwt.getSubject()), projectId, query);
+    }
+
+    /**
+     * 修改本人项目名称和介绍，介绍为空时清空原值。
+     * @param jwt 已验签的认证主体
+     * @param projectId 正数项目 ID
+     * @param request 项目名称与可空介绍
+     * @return 修改成功提示
+     */
+    @PutMapping("/{projectId}")
+    public String update(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable @Positive(message = "项目ID必须大于零") Long projectId,
+            @Valid @RequestBody UpdateAgentProjectRequest request) {
+        // 仅透传白名单表单，用户身份由 JWT 确定；服务层统一校验所有权并更新。
+        return projectService.updateProject(Long.valueOf(jwt.getSubject()), projectId, request);
     }
 
     /**

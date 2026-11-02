@@ -118,6 +118,33 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
     }
 
     /**
+     * 仅更新当前用户对话的名称，归档对话同样允许重命名，保持原有归属及状态。
+     * @param userId 当前认证用户 ID
+     * @param chatId 待重命名对话 ID
+     * @param request 新名称，不能为空白且不得超过 128 个字符
+     * @return 重命名成功提示
+     * @throws BizException 身份、参数不合法，或对话不存在及不属于本人时抛出
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String renameChat(Long userId, Long chatId, RenameAgentChatRequest request) {
+        requireId(userId, "用户不合法");
+        requireId(chatId, "对话不合法");
+        // 非 HTTP 调用也必须遵守名称约束，名称允许重复但不能保存空白内容。
+        if (request == null || request.chatName() == null || request.chatName().isBlank()
+                || request.chatName().length() > 128) {
+            throw new BizException("对话名不能为空且不能超过128个字符");
+        }
+        // 在同一次 UPDATE 中校验所有权，仅设置 chat_name，不改项目、归档状态或创建时间。
+        int affected = chatMapper.update(null, Wrappers.lambdaUpdate(AgentChat.class)
+                .eq(AgentChat::getId, chatId).eq(AgentChat::getUserId, userId)
+                .set(AgentChat::getChatName, request.chatName().strip()));
+        // 不区分记录不存在和属于他人，避免通过重命名接口探测其他用户的对话。
+        if (affected != 1) { throw new BizException("对话不存在或无权访问"); }
+        return "对话已重命名";
+    }
+
+    /**
      * 使用用户与对话 ID 联合条件删除，避免先查后删的所有权检查窗口。
      * @param userId 当前认证用户 ID
      * @param chatId 待删除对话 ID
