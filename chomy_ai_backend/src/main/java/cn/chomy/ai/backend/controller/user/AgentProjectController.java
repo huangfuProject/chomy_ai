@@ -22,10 +22,22 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/user/agent/projects")
 @RequiredArgsConstructor
 public class AgentProjectController {
-    /** 项目创建与事务删除业务。 */
+    /** 项目分页、创建与事务删除业务。 */
     private final AgentProjectService projectService;
     /** 项目对话分页业务。 */
     private final AgentChatService chatService;
+
+    /**
+     * 分页读取当前登录用户的全部项目，按创建时间和 ID 倒序。
+     * @param jwt 已验签的认证主体，不接受客户端指定所有者
+     * @param query 分页参数，默认第一页、每页 20 条，最多 100 条
+     * @return 包含项目记录、总数及页码信息的分页结果
+     */
+    @GetMapping
+    public IPage<AgentProject> page(@AuthenticationPrincipal Jwt jwt, @Valid @ModelAttribute AgentPageQuery query) {
+        // 用户身份固定来自 JWT；所有权过滤、分页边界检查和排序由服务层统一处理。
+        return projectService.pageProjects(Long.valueOf(jwt.getSubject()), query);
+    }
 
     /**
      * 创建当前用户项目。

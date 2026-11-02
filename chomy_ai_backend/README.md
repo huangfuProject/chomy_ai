@@ -337,10 +337,11 @@ V1 建表完成后，执行 `sql/V2__init_rbac_and_user_data.sql`，先初始化
 
 `AgentChatType` 定义 0 无项目、1 有项目；`AgentChatArchiveStatus` 定义 0 未归档、1 已归档。类型为 0 时项目 ID 必须为空，类型为 1 时项目必须存在且属于同一用户。内部 `AgentChatService.createChat` 负责这些校验，并在项目对话写入前锁定项目行，与项目删除互斥；新对话显式设为未归档。这次不提供创建对话或更改归档状态的 HTTP 接口。继承的通用 CRUD 仅供内部可信持久化调用，不能直接作为客户端写入入口；后续对话创建业务应调用上述专用方法。
 
-新库继续使用 V0 → V1 → V2：V1 统一创建七张表，V2 插入原有初始化数据和新增六个接口权限。已有数据库只需手动执行 `sql/V3__create_agent_project_chat_table.sql` 一次，该文件新增两张表、注释、索引和六个权限，并为已有 `super_admin` 角色补齐全部权限；不要在已有库重复执行全量 V1。项目不会自动执行 SQL。本次不创建外键、CHECK、函数或触发器，关系校验和删除清理在业务代码完成。
+新库继续使用 V0 → V1 → V2：V1 统一创建七张表，V2 插入原有初始化数据和新增七个接口权限。已有数据库尚无项目与对话表时，先手动执行 `sql/V3__create_agent_project_chat_table.sql` 一次，再执行 V4；V3 新增两张表、注释、索引和原六个权限，V4 补齐项目分页权限及超级管理员授权；不要在已有库重复执行全量 V1。项目不会自动执行 SQL。本次不创建外键、CHECK、函数或触发器，关系校验和删除清理在业务代码完成。
 
 | 方法 | 路径 | 用途 | 独立权限码 |
 | --- | --- | --- | --- |
+| GET | `/user/agent/projects` | 本人全部项目分页 | `agent:project:page` |
 | POST | `/user/agent/projects` | 创建本人项目 | `agent:project:create` |
 | GET | `/user/agent/projects/{projectId}/chats` | 本人指定项目对话分页 | `agent:chat:project` |
 | GET | `/user/agent/chats/standalone` | 本人非项目对话分页 | `agent:chat:standalone` |
@@ -350,12 +351,16 @@ V1 建表完成后，执行 `sql/V2__init_rbac_and_user_data.sql`，先初始化
 
 创建表单为 `{"projectName":"项目名称","description":"可选介绍"}`，服务端去除项目名首尾空白，拒绝空白名称。用户身份只从已验签 JWT 取得，不接受表单指定的用户 ID。全部查询和单条删除按认证用户隔离，他人项目/对话与不存在的记录均使用相同业务错误。删除项目在事务中先锁定本人的项目，再物理删除全部关联对话（包含归档对话），最后删除项目；单条对话删除不影响项目。
 
-分页参数为 `current`（默认 1）和 `size`（默认 20，最大 100），结果沿用 `ApiResult` 包装及 MyBatis-Plus 分页结构，按 `created_at DESC, id DESC` 稳定排序。项目和非项目列表包含归档记录；归档列表仅包含 `archived=1`，同时覆盖有项目及无项目对话。记录均返回 `projectName`，没有项目时 `projectId`、`projectName` 为空；项目名称按当前页项目 ID 批量读取，避免逐条查询。
+分页参数为 `current`（默认 1）和 `size`（默认 20，最大 100），结果沿用 `ApiResult` 包装及 MyBatis-Plus 分页结构，按 `created_at DESC, id DESC` 稳定排序。项目对话和非项目对话列表包含归档记录；归档列表仅包含 `archived=1`，同时覆盖有项目及无项目对话。对话记录均返回 `projectName`，没有项目时 `projectId`、`projectName` 为空；项目名称按当前页项目 ID 批量读取，避免逐条查询。
 
-六个新增权限归属“用户前台”目录，接口与操作按钮共用类型 3 节点。V2 和 V3 在权限写入后，逐条为固定种子 `super_admin` 角色补齐本版本全部 18 个权限，重复执行授权语句不会增加重复关系。后续所有新增权限也必须在对应版本 SQL 中同步授予超级管理员角色，普通角色仍须单独授权；执行后须撤销受影响用户 Redis 会话或重新登录。未登录返回 401，已登录但未授权返回 403；服务专用 HTTP 业务方法也保留独立权限检查。
+项目分页接口为 `GET /user/agent/projects?current=1&size=20`，仅返回已验签 JWT 所属用户的全部项目，不接受客户端指定用户。复用 `AgentPageQuery`：默认第一页、每页 20 条，每页最多 100 条；按 `created_at DESC, id DESC` 排序，响应在统一 `data` 包装中包含 `records`、`total`、`current`、`size`、`pages`。项目记录包含 `id`、`projectName`、`description`、`userId`、`createdAt`，无记录时返回空列表。
+
+新库 V2 已包含独立权限 `agent:project:page` 及超级管理员授权（当前共 19 个权限）。已完成原 V2 或 V3 的数据库需手动执行 `sql/V4__add_agent_project_page_permission.sql`；若原库尚无项目表，先执行 V3，再执行 V4。执行前核对脚本中的固定种子 ID，执行后须撤销受影响用户 Redis 会话或重新登录；其他角色须显式授权。此处仅提供升级文件，没有自动修改数据库。
+
+七个项目及对话权限归属“用户前台”目录，接口与操作按钮共用类型 3 节点。V2 为固定种子 `super_admin` 角色逐条授予全部 19 个权限；已有库通过 V3 授予原 18 个权限，再由 V4 增加项目分页权限，重复执行授权语句不会增加重复关系。后续所有新增权限也必须在对应版本 SQL 中同步授予超级管理员角色，普通角色仍须单独授权；执行后须撤销受影响用户 Redis 会话或重新登录。未登录返回 401，已登录但未授权返回 403；服务专用 HTTP 业务方法也保留独立权限检查。
 
 ### 初始化插入语句规范
 
-静态初始化和升级数据统一采用 `INSERT INTO ... VALUES`，直接列出菜单父 ID、用户角色关联及全部 18 条超级管理员授权。V2 和 V3 不再使用 `INSERT ... SELECT` 或 JOIN 组装静态数据；授权关系 ID 沿用原有确定值，重复关系通过 `ON CONFLICT` 跳过。后续新增权限时，必须在对应版本脚本中同步追加超级管理员授权 VALUES。
+静态初始化和升级数据统一采用单行插入语句 `INSERT INTO ... VALUES (...);`，每条 INSERT 只插入一行，保留 VALUES 关键字，不使用多组 VALUES 批量插入；直接列出菜单父 ID、用户角色关联和超级管理员授权（V2 共 19 条，V3 原 18 条，V4 补充 1 条）。V2、V3 和 V4 不使用 `INSERT ... SELECT` 或 JOIN 组装静态数据；授权关系 ID 沿用原有确定值，重复关系通过 `ON CONFLICT` 跳过。后续新增权限时，必须在对应版本脚本中同步追加独立的超级管理员授权 INSERT 语句。
 
 所有关联使用 V2 中的固定种子 ID。已有数据库执行前须核对同编码目录、菜单、权限以及 `admin`、`super_admin` 的 ID 与脚本一致；自定义 ID 须先调整脚本中的关联值。脚本仅授权明确列出的权限，自定义权限需额外列出授权行，不再扫描权限表。

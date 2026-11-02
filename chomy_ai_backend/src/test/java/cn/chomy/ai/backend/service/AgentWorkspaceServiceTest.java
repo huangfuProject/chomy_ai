@@ -49,6 +49,58 @@ class AgentWorkspaceServiceTest {
         chatService = new AgentChatServiceImpl(chats, projects);
     }
 
+    /** 项目分页必须限制当前用户，保留分页元数据，并在创建时间相同时按 ID 稳定倒序。 */
+    @Test
+    void projectPaginationIsOwnedAndOrdered() {
+        AgentProject row = project(10L, "项目");
+        when(projects.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> {
+            Page<AgentProject> page = call.getArgument(0);
+            page.setTotal(5); page.setRecords(List.of(row)); return page;
+        });
+        AgentPageQuery query = new AgentPageQuery(); query.setCurrent(2L); query.setSize(2L);
+        var result = projectService.pageProjects(1L, query);
+        assertThat(result.getCurrent()).isEqualTo(2);
+        assertThat(result.getSize()).isEqualTo(2);
+        assertThat(result.getTotal()).isEqualTo(5);
+        assertThat(result.getRecords()).containsExactly(row);
+        // 检查真正传入 Mapper 的条件，防止替身返回值掩盖缺失的用户隔离。
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        verify(projects).selectPage(any(Page.class), capture.capture());
+        assertOwned(capture.getValue(), "user_id", 1L);
+        assertThat(capture.getValue().getSqlSegment()).contains("ORDER BY created_at DESC,id DESC");
+        verifyNoInteractions(chats);
+    }
+
+    /** 默认分页和空页必须正常返回，不额外查询对话或更改页码。 */
+    @Test
+    void projectPaginationSupportsEmptyPage() {
+        when(projects.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> call.getArgument(0));
+        var result = projectService.pageProjects(1L, new AgentPageQuery());
+        assertThat(result.getCurrent()).isEqualTo(1);
+        assertThat(result.getSize()).isEqualTo(20);
+        assertThat(result.getTotal()).isZero();
+        assertThat(result.getRecords()).isEmpty();
+        verifyNoInteractions(chats);
+    }
+
+    /** 内部调用的身份、空分页参数及上下界校验均须在访问数据库前完成。 */
+    @Test
+    void projectPaginationRejectsInvalidParameters() {
+        for (Long userId : new Long[]{null, 0L, -1L}) {
+            assertThatThrownBy(() -> projectService.pageProjects(userId, new AgentPageQuery())).hasMessage("用户不合法");
+        }
+        assertThatThrownBy(() -> projectService.pageProjects(1L, null)).hasMessage("分页参数不合法");
+        for (Long current : new Long[]{null, 0L, -1L, (long) Integer.MAX_VALUE + 1}) {
+            AgentPageQuery query = new AgentPageQuery(); query.setCurrent(current);
+            assertThatThrownBy(() -> projectService.pageProjects(1L, query)).hasMessage("分页参数不合法");
+        }
+        for (Long size : new Long[]{null, 0L, -1L, 101L}) {
+            AgentPageQuery query = new AgentPageQuery(); query.setSize(size);
+            assertThatThrownBy(() -> projectService.pageProjects(1L, query)).hasMessage("分页参数不合法");
+        }
+        verifyNoInteractions(projects, chats);
+    }
+
     /** 同名项目不得判重，所有者由认证参数指定，并返回数据库创建时间。 */
     @Test
     void allowsDuplicateProjectNames() {

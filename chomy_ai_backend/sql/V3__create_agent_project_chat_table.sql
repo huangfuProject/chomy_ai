@@ -3,7 +3,7 @@
 -- 新增两张表及六个权限，并向已有 super_admin 角色补齐全部权限；不创建管理员，不自动执行。
 -- 账号须具有 public 模式建表及 sys_permission 读写权限；所有步骤使用同一事务。
 -- 执行前须已初始化 super_admin 角色，并核对目录、角色及权限 ID 与 V2 固定种子一致。
--- 授权直接列出本版本全部 18 个权限，不扫描数据库；自定义权限需另加授权 VALUES。
+-- 授权直接列出本版本全部 18 个权限，不扫描数据库；自定义权限需另加独立的授权 INSERT 语句。
 -- 升级后须撤销受影响用户 Redis 会话或重新登录。
 -- @author chomy
 BEGIN;
@@ -59,36 +59,129 @@ CREATE INDEX idx_sys_agent_chat_project ON public.sys_agent_chat (project_id);
 INSERT INTO public.sys_permission
     (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
 VALUES
-    (970000000000200011, 970000000000200000, 'agent:project:create', '创建项目', 3, '/user/agent/projects', 'POST', 0, 10, '仅可操作本人数据，接口和操作按钮共用此权限码', 0),
-    (970000000000200012, 970000000000200000, 'agent:project:delete', '删除项目及对话', 3, '/user/agent/projects/{projectId}', 'DELETE', 0, 20, '仅可操作本人数据，接口和操作按钮共用此权限码', 0),
-    (970000000000200013, 970000000000200000, 'agent:chat:project', '项目对话分页', 3, '/user/agent/projects/{projectId}/chats', 'GET', 0, 30, '仅可操作本人数据，接口和操作按钮共用此权限码', 0),
-    (970000000000200014, 970000000000200000, 'agent:chat:standalone', '非项目对话分页', 3, '/user/agent/chats/standalone', 'GET', 0, 40, '仅可操作本人数据，接口和操作按钮共用此权限码', 0),
-    (970000000000200015, 970000000000200000, 'agent:chat:archived', '归档对话分页', 3, '/user/agent/chats/archived', 'GET', 0, 50, '仅可操作本人数据，接口和操作按钮共用此权限码', 0),
+    (970000000000200011, 970000000000200000, 'agent:project:create', '创建项目', 3, '/user/agent/projects', 'POST', 0, 10, '仅可操作本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
+    (970000000000200012, 970000000000200000, 'agent:project:delete', '删除项目及对话', 3, '/user/agent/projects/{projectId}', 'DELETE', 0, 20, '仅可操作本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
+    (970000000000200013, 970000000000200000, 'agent:chat:project', '项目对话分页', 3, '/user/agent/projects/{projectId}/chats', 'GET', 0, 30, '仅可操作本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
+    (970000000000200014, 970000000000200000, 'agent:chat:standalone', '非项目对话分页', 3, '/user/agent/chats/standalone', 'GET', 0, 40, '仅可操作本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
+    (970000000000200015, 970000000000200000, 'agent:chat:archived', '归档对话分页', 3, '/user/agent/chats/archived', 'GET', 0, 50, '仅可操作本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
     (970000000000200016, 970000000000200000, 'agent:chat:delete', '删除对话', 3, '/user/agent/chats/{chatId}', 'DELETE', 0, 60, '仅可操作本人数据，接口和操作按钮共用此权限码', 0)
 ON CONFLICT (permission_code) DO NOTHING;
 
 -- 将本版本全部 18 个权限逐条授予超级管理员，包括目录、菜单和接口/操作按钮。
--- role_id 固定为超级管理员种子 ID；后续每新增一个权限，必须同步追加一条授权 VALUES。
+-- role_id 固定为超级管理员种子 ID；后续每新增一个权限，必须同步追加一条独立的授权 INSERT 语句。
 -- 关联 ID 沿用权限 ID 加固定偏移后的确定值，直接列出便于核对；重复关系由唯一索引幂等跳过。
 INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
 VALUES
-    (971000000000200000, 970000000001000002, 970000000000200000, 0),
-    (971000000000300000, 970000000001000002, 970000000000300000, 0),
-    (971000000000100000, 970000000001000002, 970000000000100000, 0),
-    (971000000000100011, 970000000001000002, 970000000000100011, 0),
-    (971000000000100012, 970000000001000002, 970000000000100012, 0),
-    (971000000000100013, 970000000001000002, 970000000000100013, 0),
-    (971000000000100014, 970000000001000002, 970000000000100014, 0),
-    (971000000000100015, 970000000001000002, 970000000000100015, 0),
-    (971000000000100016, 970000000001000002, 970000000000100016, 0),
-    (971000000000100017, 970000000001000002, 970000000000100017, 0),
-    (971000000000100031, 970000000001000002, 970000000000100031, 0),
-    (971000000000100032, 970000000001000002, 970000000000100032, 0),
-    (971000000000200011, 970000000001000002, 970000000000200011, 0),
-    (971000000000200012, 970000000001000002, 970000000000200012, 0),
-    (971000000000200013, 970000000001000002, 970000000000200013, 0),
-    (971000000000200014, 970000000001000002, 970000000000200014, 0),
-    (971000000000200015, 970000000001000002, 970000000000200015, 0),
+    (971000000000200000, 970000000001000002, 970000000000200000, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000300000, 970000000001000002, 970000000000300000, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100000, 970000000001000002, 970000000000100000, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100011, 970000000001000002, 970000000000100011, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100012, 970000000001000002, 970000000000100012, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100013, 970000000001000002, 970000000000100013, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100014, 970000000001000002, 970000000000100014, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100015, 970000000001000002, 970000000000100015, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100016, 970000000001000002, 970000000000100016, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100017, 970000000001000002, 970000000000100017, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100031, 970000000001000002, 970000000000100031, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000100032, 970000000001000002, 970000000000100032, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200011, 970000000001000002, 970000000000200011, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200012, 970000000001000002, 970000000000200012, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200013, 970000000001000002, 970000000000200013, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200014, 970000000001000002, 970000000000200014, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200015, 970000000001000002, 970000000000200015, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
     (971000000000200016, 970000000001000002, 970000000000200016, 0)
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 

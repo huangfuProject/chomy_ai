@@ -5,7 +5,7 @@ import lombok.Getter;
 import lombok.Setter;
 
 /**
- * 用户对话分页参数，限制单次查询规模；排序规则固定由服务端指定。
+ * 用户项目与对话共用分页参数，限制单次查询规模；排序规则固定由服务端指定。
  * @author chomy
  */
 @Getter

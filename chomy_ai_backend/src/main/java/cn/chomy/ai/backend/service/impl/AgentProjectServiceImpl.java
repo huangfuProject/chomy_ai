@@ -2,12 +2,15 @@ package cn.chomy.ai.backend.service.impl;
 
 import cn.chomy.ai.backend.common.exception.BizException;
 import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
+import cn.chomy.ai.backend.dto.agent.AgentPageQuery;
 import cn.chomy.ai.backend.entity.AgentChat;
 import cn.chomy.ai.backend.entity.AgentProject;
 import cn.chomy.ai.backend.mapper.AgentChatMapper;
 import cn.chomy.ai.backend.mapper.AgentProjectMapper;
 import cn.chomy.ai.backend.service.AgentProjectService;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.spring.service.impl.ServiceImpl;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -25,6 +28,28 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
     private final AgentProjectMapper projectMapper;
     /** 删除项目时在同一事务清理对话，不依赖对话分页过滤条件。 */
     private final AgentChatMapper chatMapper;
+
+    /**
+     * 有界分页读取当前用户全部项目，固定排序并在查询中实施用户隔离。
+     * @param userId 当前认证用户 ID，必须为正数
+     * @param query 页码从 1 开始、最大为 Integer.MAX_VALUE，每页 1 至 100 条
+     * @return 项目分页；没有项目或超出末页时记录列表为空
+     * @throws BizException 用户 ID 或分页参数不合法时拒绝查询
+     */
+    @Override
+    public IPage<AgentProject> pageProjects(Long userId, AgentPageQuery query) {
+        requireId(userId, "用户不合法");
+        // 内部调用也必须检查空值和分页上限，避免绕过 HTTP 校验造成无界查询。
+        if (query == null || query.getCurrent() == null || query.getCurrent() < 1
+                || query.getCurrent() > Integer.MAX_VALUE || query.getSize() == null
+                || query.getSize() < 1 || query.getSize() > 100) {
+            throw new BizException("分页参数不合法");
+        }
+        // 直接在 SQL 中限制所属用户；时间相同时再按 ID 倒序，保证排序确定。
+        return projectMapper.selectPage(new Page<>(query.getCurrent(), query.getSize()),
+                Wrappers.lambdaQuery(AgentProject.class).eq(AgentProject::getUserId, userId)
+                        .orderByDesc(AgentProject::getCreatedAt).orderByDesc(AgentProject::getId));
+    }
 
     /**
      * 创建本人项目并读取数据库生成的创建时间，名称仅作展示，不进行判重。

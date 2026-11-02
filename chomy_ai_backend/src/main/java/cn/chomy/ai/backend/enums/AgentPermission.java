@@ -8,6 +8,8 @@ import lombok.Getter;
  */
 @Getter
 public enum AgentPermission {
+    /** 分页查看本人全部项目。 */
+    PROJECT_PAGE("agent:project:page"),
     /** 创建本人项目。 */
     PROJECT_CREATE("agent:project:create"),
     /** 删除本人项目及全部对话。 */

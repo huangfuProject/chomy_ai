@@ -2,6 +2,7 @@ package cn.chomy.ai.backend.service;
 
 import cn.chomy.ai.backend.entity.AgentProject;
 import cn.chomy.ai.backend.dto.agent.*;
+import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.spring.service.IService;
 import org.springframework.security.access.prepost.PreAuthorize;
 
@@ -11,6 +12,15 @@ import org.springframework.security.access.prepost.PreAuthorize;
  * @author chomy
  */
 public interface AgentProjectService extends IService<AgentProject> {
+    /**
+     * 分页查看本人全部项目，不读取其他用户的数据。
+     * @param userId 已验签 JWT 用户 ID
+     * @param query 有界分页参数，服务层同样校验其合法性
+     * @return 按创建时间和 ID 倒序的项目分页
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).PROJECT_PAGE.code)")
+    IPage<AgentProject> pageProjects(Long userId, AgentPageQuery query);
+
     /**
      * 创建当前用户项目，名称允许重复，所属用户由服务端确定。
      * @param userId 已验签 JWT 用户 ID

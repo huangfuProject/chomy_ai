@@ -423,10 +423,11 @@ class SecurityIntegrationTest {
                 .content("{\"newPassword\":\"ChangedPass123!\"}")).andExpect(status().isForbidden());
     }
 
-    /** 六个项目及对话接口必须与真实 SQL 权限一一对应，用户 ID 来自 JWT 而非表单。 */
+    /** 七个项目及对话接口必须与真实 SQL 权限一一对应，用户 ID 来自 JWT 而非表单。 */
     @Test
     void agentEndpointsMatchSeedAndUseJwtOwner() throws Exception {
         grantAgentPermissions(AgentPermission.values());
+        when(store.agentProjects.pageProjects(anyLong(), any())).thenReturn(new Page<>());
         when(store.agentChats.projectChats(anyLong(), anyLong(), any())).thenReturn(new Page<>());
         when(store.agentChats.standaloneChats(anyLong(), any())).thenReturn(new Page<>());
         when(store.agentChats.archivedChats(anyLong(), any())).thenReturn(new Page<>());
@@ -438,6 +439,10 @@ class SecurityIntegrationTest {
                 .content("{\"projectName\":\"项目\",\"userId\":999}"))
                 .andExpect(status().isOk());
         verify(store.agentProjects).createProject(eq(1L), any(CreateAgentProjectRequest.class));
+        // 查询串中的伪造 userId 不得覆盖 JWT 身份；合法页码应完整传递给 Service。
+        mvc.perform(get("/user/agent/projects?userId=999&current=2&size=10").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.records").isArray());
+        verify(store.agentProjects).pageProjects(eq(1L), argThat(query -> query.getCurrent() == 2L && query.getSize() == 10L));
         mvc.perform(get("/user/agent/projects/10/chats").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
         verify(store.agentChats).projectChats(eq(1L), eq(10L), any(AgentPageQuery.class));
         mvc.perform(get("/user/agent/chats/standalone").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
@@ -454,10 +459,12 @@ class SecurityIntegrationTest {
     @Test
     void agentEndpointsRequireIndependentPermissions() throws Exception {
         mvc.perform(get("/user/agent/chats/archived")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/user/agent/projects")).andExpect(status().isUnauthorized());
         grantAgentPermissions(AgentPermission.ARCHIVED_CHATS);
         String token = login();
         mvc.perform(post("/user/agent/projects").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"projectName\":\"项目\"}")).andExpect(status().isForbidden());
+        mvc.perform(get("/user/agent/projects").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
         mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
         mvc.perform(delete("/user/agent/chats/100").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
         verifyNoInteractions(store.agentProjects, store.agentChats);
@@ -470,6 +477,22 @@ class SecurityIntegrationTest {
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
     }
 
+    /** 创建权限不能隐式授予项目分页，分页权限也不能隐式授予项目删除。 */
+    @Test
+    void projectPagePermissionIsIndependent() throws Exception {
+        grantAgentPermissions(AgentPermission.PROJECT_CREATE);
+        String createToken = login();
+        mvc.perform(get("/user/agent/projects").header("Authorization", "Bearer " + createToken))
+                .andExpect(status().isForbidden());
+        grantAgentPermissions(AgentPermission.PROJECT_PAGE);
+        when(store.agentProjects.pageProjects(anyLong(), any())).thenReturn(new Page<>());
+        String pageToken = login();
+        mvc.perform(get("/user/agent/projects").header("Authorization", "Bearer " + pageToken)).andExpect(status().isOk());
+        mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + pageToken))
+                .andExpect(status().isForbidden());
+        verify(store.agentProjects, never()).deleteProject(anyLong(), anyLong());
+    }
+
     /** 表单和页码校验失败应返回 400，不能将非法参数交给业务层。 */
     @Test
     void agentEndpointsValidateInputs() throws Exception {
@@ -477,13 +500,18 @@ class SecurityIntegrationTest {
         String token = login();
         mvc.perform(post("/user/agent/projects").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"projectName\":\"  \"}")).andExpect(status().isBadRequest());
+        for (String query : List.of("size=101", "size=0", "current=0", "current=2147483648", "current=abc")) {
+            // 非法页码或规模在 MVC 层返回 400，不调用服务读取数据。
+            mvc.perform(get("/user/agent/projects?" + query).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isBadRequest());
+        }
         mvc.perform(get("/user/agent/chats/archived?size=101").header("Authorization", "Bearer " + token)).andExpect(status().isBadRequest());
         mvc.perform(delete("/user/agent/chats/0").header("Authorization", "Bearer " + token)).andExpect(status().isBadRequest());
         verifyNoInteractions(store.agentProjects, store.agentChats);
     }
 
     /**
-     * 从真实 V2 提取六个 Agent 接口资源，只向测试账户授予指定权限。
+     * 从真实 V2 提取全部 Agent 接口资源，只向测试账户授予指定权限。
      * @param granted 本次测试允许的独立权限
      */
     private void grantAgentPermissions(AgentPermission... granted) throws Exception {
