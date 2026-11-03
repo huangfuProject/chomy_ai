@@ -13,6 +13,43 @@ import org.springframework.security.access.prepost.PreAuthorize;
  */
 public interface AgentChatService extends IService<AgentChat> {
     /**
+     * 创建本人聊天，服务端推导归属类型并固定初始状态为未归档。
+     * @param userId 已验签 JWT 用户 ID
+     * @param request 名称及可空的本人项目 ID
+     * @return 持久化后的聊天，包含创建时间
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).CHAT_CREATE.code)")
+    AgentChat createChat(Long userId, CreateAgentChatRequest request);
+
+    /**
+     * 归档本人聊天，已归档时重复操作仍返回成功，不改变项目归属。
+     * @param userId 已验签 JWT 用户 ID
+     * @param chatId 聊天 ID
+     * @return 归档成功提示，不存在或无所有权时抛出业务异常
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).CHAT_ARCHIVE.code)")
+    String archiveChat(Long userId, Long chatId);
+
+    /**
+     * 将本人聊天恢复为未归档，重复恢复仍返回成功，不改变项目归属。
+     * @param userId 已验签 JWT 用户 ID
+     * @param chatId 聊天 ID
+     * @return 恢复成功提示，不存在或无所有权时抛出业务异常
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).CHAT_RESTORE.code)")
+    String restoreChat(Long userId, Long chatId);
+
+    /**
+     * 移动本人聊天到本人项目，或移出为无项目聊天，保持原归档状态。
+     * @param userId 已验签 JWT 用户 ID
+     * @param chatId 聊天 ID
+     * @param request 目标项目 ID，为空表示移出；表单本身不能为空
+     * @return 移动成功提示，不存在、无所有权或目标项目不合法时抛出业务异常
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).CHAT_MOVE.code)")
+    String moveChat(Long userId, Long chatId, MoveAgentChatRequest request);
+
+    /**
      * 内部可信业务创建对话，检查类型、项目归属与所有者，不直接暴露 HTTP 接口。
      * @param userId 由调用方认证上下文取得的用户 ID
      * @param projectId 可空项目 ID，必须与类型一致

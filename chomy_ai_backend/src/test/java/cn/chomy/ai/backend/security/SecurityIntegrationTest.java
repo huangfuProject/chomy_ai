@@ -8,6 +8,8 @@ import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
 import cn.chomy.ai.backend.dto.agent.AgentPageQuery;
 import cn.chomy.ai.backend.enums.AgentPermission;
 import cn.chomy.ai.backend.dto.agent.UpdateAgentProjectRequest;
+import cn.chomy.ai.backend.dto.agent.CreateAgentChatRequest;
+import cn.chomy.ai.backend.dto.agent.MoveAgentChatRequest;
 import cn.chomy.ai.backend.dto.agent.RenameAgentChatRequest;
 import org.springframework.security.access.AccessDeniedException;
 
@@ -562,6 +564,111 @@ class SecurityIntegrationTest {
         verifyNoInteractions(store.agentProjects, store.agentChats);
     }
 
+    /** 新生命周期接口按真实 V6 授权，用户 ID 固定来自 JWT，派生字段不进入表单。 */
+    @Test
+    void chatLifecycleUsesJwtOwnerAndWhitelist() throws Exception {
+        grantAgentPermissions(AgentPermission.CHAT_CREATE, AgentPermission.CHAT_ARCHIVE,
+                AgentPermission.CHAT_RESTORE, AgentPermission.CHAT_MOVE);
+        AgentChat created = new AgentChat(); created.setId(100L); created.setUserId(1L);
+        created.setChatName("新聊天"); created.setType(AgentChatType.STANDALONE);
+        created.setArchived(AgentChatArchiveStatus.UNARCHIVED);
+        when(store.agentChats.createChat(anyLong(), any(CreateAgentChatRequest.class))).thenReturn(created);
+        when(store.agentChats.archiveChat(anyLong(), anyLong())).thenReturn("对话已归档");
+        when(store.agentChats.restoreChat(anyLong(), anyLong())).thenReturn("对话已恢复");
+        when(store.agentChats.moveChat(anyLong(), anyLong(), any())).thenReturn("对话已移动");
+        String token = login();
+        mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"chatName\":\"新聊天\",\"userId\":999,\"type\":1,\"archived\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value("100"))
+                .andExpect(jsonPath("$.data.archived").value(0));
+        verify(store.agentChats).createChat(eq(1L), eq(new CreateAgentChatRequest("新聊天", null)));
+        mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"chatName\":\"项目聊天\",\"projectId\":10}"))
+                .andExpect(status().isOk());
+        verify(store.agentChats).createChat(eq(1L), eq(new CreateAgentChatRequest("项目聊天", 10L)));
+        for (String action : List.of("archive", "restore")) {
+            mvc.perform(put("/user/agent/chats/100/" + action).header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk());
+        }
+        verify(store.agentChats).archiveChat(1L, 100L); verify(store.agentChats).restoreChat(1L, 100L);
+        mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"projectId\":20,\"userId\":999,\"archived\":0}"))
+                .andExpect(status().isOk());
+        verify(store.agentChats).moveChat(eq(1L), eq(100L), eq(new MoveAgentChatRequest(20L)));
+        mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"projectId\":null}" )).andExpect(status().isOk());
+        verify(store.agentChats).moveChat(eq(1L), eq(100L), eq(new MoveAgentChatRequest(null)));
+        // 前端用十进制字符串传递雪花 ID，Jackson 绑定 Long 时必须保留超出 JS 安全整数范围的精度。
+        mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"chatName\":\"大整数项目聊天\",\"projectId\":\"970000000000001041\"}"))
+                .andExpect(status().isOk());
+        verify(store.agentChats).createChat(eq(1L), eq(new CreateAgentChatRequest("大整数项目聊天", 970000000000001041L)));
+        mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"projectId\":\"970000000000001041\"}"))
+                .andExpect(status().isOk());
+        verify(store.agentChats).moveChat(eq(1L), eq(100L), eq(new MoveAgentChatRequest(970000000000001041L)));
+    }
+
+    /** 创建、归档、恢复、移动各自独立授权，归档权限不能授予恢复或移动。 */
+    @Test
+    void chatLifecycleRequiresIndependentPermissions() throws Exception {
+        mvc.perform(post("/user/agent/chats").contentType("application/json").content("{}"))
+                .andExpect(status().isUnauthorized());
+        for (String action : List.of("archive", "restore", "move")) {
+            mvc.perform(put("/user/agent/chats/100/" + action).contentType("application/json").content("{}"))
+                    .andExpect(status().isUnauthorized());
+        }
+        grantAgentPermissions(AgentPermission.CHAT_ARCHIVE);
+        when(store.agentChats.archiveChat(anyLong(), anyLong())).thenReturn("对话已归档");
+        String token = login();
+        mvc.perform(put("/user/agent/chats/100/archive").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
+        mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"chatName\":\"聊天\"}" )).andExpect(status().isForbidden());
+        for (String action : List.of("restore", "move")) {
+            mvc.perform(put("/user/agent/chats/100/" + action).header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content("{}" )).andExpect(status().isForbidden());
+        }
+        // 服务方法级鉴权同样独立，非 HTTP 调用不因拥有归档权限获得其他写权限。
+        var authentication = context.getBean(JwtSessionService.class).authenticate(context.getBean(JwtDecoder.class).decode(token));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            var service = context.getBean(AgentChatService.class);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.restoreChat(1L, 100L)).isInstanceOf(AccessDeniedException.class);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.moveChat(1L, 100L, new MoveAgentChatRequest(null)))
+                    .isInstanceOf(AccessDeniedException.class);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createChat(1L, new CreateAgentChatRequest("聊天", null)))
+                    .isInstanceOf(AccessDeniedException.class);
+        } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
+        verify(store.agentChats, never()).restoreChat(anyLong(), anyLong());
+        verify(store.agentChats, never()).moveChat(anyLong(), anyLong(), any());
+        verify(store.agentChats, never()).createChat(anyLong(), any(CreateAgentChatRequest.class));
+    }
+
+    /** 创建与移动的表单、项目 ID 和路径 ID 必须在 MVC 层校验，失败不调用业务。 */
+    @Test
+    void chatLifecycleValidatesInputs() throws Exception {
+        grantAgentPermissions(AgentPermission.CHAT_CREATE, AgentPermission.CHAT_ARCHIVE,
+                AgentPermission.CHAT_RESTORE, AgentPermission.CHAT_MOVE);
+        String token = login();
+        for (String body : List.of("{}", "null", "{\"chatName\":\" \"}",
+                json.writeValueAsString(new CreateAgentChatRequest("a".repeat(129), null)),
+                "{\"chatName\":\"聊天\",\"projectId\":0}")) {
+            mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content(body)).andExpect(status().isBadRequest());
+        }
+        for (String body : List.of("null", "{\"projectId\":-1}")) {
+            mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content(body)).andExpect(status().isBadRequest());
+        }
+        mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest());
+        for (String action : List.of("archive", "restore", "move")) {
+            mvc.perform(put("/user/agent/chats/0/" + action).header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content("{}" )).andExpect(status().isBadRequest());
+        }
+        verifyNoInteractions(store.agentChats);
+    }
+
     /** 表单和页码校验失败应返回 400，不能将非法参数交给业务层。 */
     @Test
     void agentEndpointsValidateInputs() throws Exception {
@@ -580,12 +687,15 @@ class SecurityIntegrationTest {
     }
 
     /**
-     * 从真实 V2 提取全部 Agent 接口资源，只向测试账户授予指定权限。
+     * 从真实 V2/V6 提取全部 Agent 接口资源，只向测试账户授予指定权限。
      * @param granted 本次测试允许的独立权限
      */
     private void grantAgentPermissions(AgentPermission... granted) throws Exception {
         String sql = java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
                 "sql", "V2__init_rbac_and_user_data.sql"));
+        // 新增生命周期权限仅存在独立 V6，测试必须合并实际执行脚本的资源定义。
+        sql += java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
+                "sql", "V6__add_agent_chat_lifecycle_permissions.sql"));
         List<Permission> resources = new ArrayList<>();
         // 使用种子中真实路径和方法，避免测试自行声明一套与部署数据不同的权限。
         var matcher = Pattern.compile("\\((\\d+), \\d+, '(agent:[^']+)', '[^']+', 3, '([^']+)', '([A-Z]+)',").matcher(sql);

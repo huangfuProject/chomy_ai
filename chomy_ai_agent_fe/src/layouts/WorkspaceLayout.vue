@@ -23,6 +23,7 @@ import {
   Trash2,
   Archive,
 } from "lucide-vue-next";
+import InfiniteLoad from "../components/InfiniteLoad.vue";
 import SidebarMenu from "../components/SidebarMenu.vue";
 import ConversationRow from "../components/ConversationRow.vue";
 import WorkspaceActionDialog from "../components/WorkspaceActionDialog.vue";
@@ -41,27 +42,61 @@ const mobileOpen = ref(false),
   accountOpen = ref(false),
   signingOut = ref(false),
   error = ref("");
+const creatingChat = ref(false);
 const actionDialog = ref<InstanceType<typeof WorkspaceActionDialog> | null>(
   null,
 );
-const projectHeadingItems = [
-  { id: "create", label: "创建项目", icon: FolderPlus },
-  { id: "archives", label: "已归档聊天", icon: Archive },
-];
+const projectHeadingItems = computed(() => [
+  {
+    id: "create",
+    label: "创建项目",
+    icon: FolderPlus,
+    disabled: !workspace.can("agent:project:create"),
+  },
+  {
+    id: "archives",
+    label: "已归档聊天",
+    icon: Archive,
+    disabled: !workspace.can("agent:chat:archived"),
+  },
+]);
 /** 项目操作顺序遵循参考界面，删除与常规动作分组呈现。 */
 function projectItems(project: WorkspaceProject) {
   return [
-    { id: "share", label: "分享项目", icon: Share },
-    { id: "rename", label: "重命名项目", icon: Pencil },
-    { id: "settings", label: "项目设置", icon: Settings },
+    {
+      id: "share",
+      label: "分享项目",
+      icon: Share,
+      disabled: true,
+      hint: "分享功能尚未开放",
+    },
+    {
+      id: "rename",
+      label: "重命名项目",
+      icon: Pencil,
+      disabled: !workspace.can("agent:project:update"),
+    },
+    {
+      id: "settings",
+      label: "项目设置",
+      icon: Settings,
+      disabled: !workspace.can("agent:project:update"),
+    },
     { id: "home", label: "项目主页", icon: Folder },
     {
       id: "pin",
       label: project.pinned ? "取消置顶" : "置顶项目",
       icon: Pin,
       separator: true,
+      hint: "仅保存为当前浏览器偏好",
     },
-    { id: "delete", label: "删除项目", icon: Trash2, danger: true },
+    {
+      id: "delete",
+      label: "删除项目",
+      icon: Trash2,
+      danger: true,
+      disabled: !workspace.can("agent:project:delete"),
+    },
   ];
 }
 function projectAction(action: string, id: string) {
@@ -143,6 +178,38 @@ function onViewportChange(event: MediaQueryListEvent) {
   mobileOpen.value = false;
   accountOpen.value = false;
 }
+// 前台首次进入加载两个独立列表；账户切换时由 load 清空游标，后台不额外读取前台数据。
+watch(
+  () => [area.value, stateUserId(), session.data?.permissions],
+  () => {
+    if (area.value === "frontend" && session.data) {
+      if (
+        workspace.can("agent:project:page") &&
+        !workspace.state.projectsPage.initialized
+      )
+        void workspace.loadProjects();
+      if (
+        workspace.can("agent:chat:standalone") &&
+        !workspace.state.standalonePage.initialized
+      )
+        void workspace.loadStandalone();
+    }
+  },
+  { immediate: true },
+);
+function stateUserId() {
+  return workspace.state.userId;
+}
+watch(
+  expandedProjects,
+  (ids) => {
+    if (area.value === "frontend" && workspace.can("agent:chat:project"))
+      for (const id of ids)
+        if (!workspace.projectPage(id).initialized)
+          void workspace.loadProjectChats(id);
+  },
+  { deep: true, immediate: true },
+);
 media.addEventListener("change", onViewportChange);
 /** 桌面折叠保存为用户偏好；手机只控制临时抽屉，不改动桌面设置。 */
 function toggleSidebar() {
@@ -160,17 +227,24 @@ function toggleProject(id: string) {
     ? expandedProjects.value.filter((value) => value !== id)
     : [...expandedProjects.value, id];
 }
-/** 每次点击都创建独立窗口，项目聊天只出现在所属项目下，避免混入普通聊天列表。 */
+/** 每次点击先在服务端创建聊天，成功后进入独立窗口；项目聊天只显示在所属项目下。 */
 async function startChat(projectId: string | null = null) {
+  if (creatingChat.value) return;
+  creatingChat.value = true;
   error.value = "";
   try {
-    const chat = workspace.createChat(projectId);
+    const chat = await workspace.createChat(projectId);
     if (projectId && !expandedProjects.value.includes(projectId))
       expandedProjects.value.push(projectId);
-    await router.push(`/chat/${chat.id}`);
+    await router.push({
+      path: `/chat/${chat.id}`,
+      query: projectId ? { projectId } : {},
+    });
   } catch (cause) {
     error.value =
       cause instanceof Error ? cause.message : "聊天创建失败，请重试";
+  } finally {
+    creatingChat.value = false;
   }
 }
 async function projectCreated(id: string) {
@@ -255,23 +329,51 @@ async function signOut() {
         <template v-if="area === 'frontend'">
           <!-- 第一部分：独立聊天。创建动作先生成 ID，再导航到对应窗口。 -->
           <section class="sidebar-section chat-section" aria-label="聊天栏目">
-            <button class="new-chat" @click="startChat()">
+            <button
+              class="new-chat"
+              :disabled="creatingChat || !workspace.can('agent:chat:create')"
+              @click="startChat()"
+            >
               <SquarePen :size="18" />新聊天<Plus
                 :size="17"
                 class="button-trailing"
               />
             </button>
-            <nav class="conversation-list" aria-label="无项目聊天列表">
-              <ConversationRow
-                v-for="chat in standaloneChats"
-                :key="chat.id"
-                :chat="chat"
-                @action="chatAction"
+            <div class="conversation-scroll" data-scroll-root>
+              <nav class="conversation-list" aria-label="无项目聊天列表">
+                <ConversationRow
+                  v-for="chat in standaloneChats"
+                  :key="chat.id"
+                  :chat="chat"
+                  @action="chatAction"
+                />
+              </nav>
+              <InfiniteLoad
+                :page="workspace.state.standalonePage"
+                label="独立聊天滚动分页"
+                :disabled="
+                  sidebarHidden || !workspace.can('agent:chat:standalone')
+                "
+                @load="workspace.loadStandalone()"
               />
-            </nav>
-            <p v-if="!standaloneChats.length" class="sidebar-list-empty">
-              你的新对话会出现在这里
-            </p>
+              <p
+                v-if="!workspace.can('agent:chat:standalone')"
+                class="sidebar-list-empty"
+              >
+                无独立聊天列表权限
+              </p>
+              <p
+                v-if="
+                  !standaloneChats.length &&
+                  workspace.state.standalonePage.initialized &&
+                  !workspace.state.standalonePage.loading &&
+                  !workspace.state.standalonePage.error
+                "
+                class="sidebar-list-empty"
+              >
+                你的新对话会出现在这里
+              </p>
+            </div>
           </section>
           <!-- 第二部分：项目文件夹与各自的聊天，目录按钮和加号分别操作，避免嵌套交互元素。 -->
           <section
@@ -288,81 +390,128 @@ async function signOut() {
                 /></SidebarMenu>
               </h2>
             </div>
-            <nav class="project-list" aria-label="项目列表">
-              <div
-                v-for="project in projects"
-                :key="project.id"
-                class="project-folder"
-              >
+            <div class="projects-scroll" data-scroll-root>
+              <nav class="project-list" aria-label="项目列表">
                 <div
-                  class="project-folder-row"
-                  :class="{
-                    'active-project':
-                      route.params.projectId === project.id ||
-                      workspace.state.chats.some(
-                        (c) =>
-                          c.id === route.params.chatId &&
-                          c.projectId === project.id,
-                      ),
-                  }"
+                  v-for="project in projects"
+                  :key="project.id"
+                  class="project-folder"
                 >
-                  <button
-                    class="folder-chevron"
-                    :aria-label="`${expandedProjects.includes(project.id) ? '收起' : '展开'}项目 ${project.name}`"
-                    :aria-expanded="expandedProjects.includes(project.id)"
-                    @click="toggleProject(project.id)"
-                  >
-                    <ChevronRight
-                      :size="13"
-                      :class="{
-                        'folder-expanded': expandedProjects.includes(
-                          project.id,
+                  <div
+                    class="project-folder-row"
+                    :class="{
+                      'active-project':
+                        route.params.projectId === project.id ||
+                        workspace.state.chats.some(
+                          (c) =>
+                            c.id === route.params.chatId &&
+                            c.projectId === project.id,
                         ),
-                      }"
-                    /></button
-                  ><RouterLink
-                    :to="`/projects/${project.id}`"
-                    :title="project.name"
-                    ><FolderOpen
-                      v-if="expandedProjects.includes(project.id)"
-                      :size="17"
-                    /><Folder v-else :size="17" /><span>{{
-                      project.name
-                    }}</span></RouterLink
-                  ><SidebarMenu
-                    :label="`项目 ${project.name} 的更多操作`"
-                    :items="projectItems(project)"
-                    @select="projectAction($event, project.id)"
-                  /><button
-                    class="project-add-chat"
-                    :aria-label="`在项目 ${project.name} 下新建聊天`"
-                    @click="startChat(project.id)"
+                    }"
                   >
-                    <SquarePen :size="16" />
-                  </button>
-                </div>
-                <div
-                  v-if="expandedProjects.includes(project.id)"
-                  class="project-conversations"
-                >
-                  <ConversationRow
-                    v-for="chat in workspace.listProjectChats(project.id)"
-                    :key="chat.id"
-                    :chat="chat"
-                    @action="chatAction"
-                  />
-                  <p
-                    v-if="!workspace.listProjectChats(project.id).length"
-                    class="sidebar-list-empty"
+                    <button
+                      class="folder-chevron"
+                      :aria-label="`${expandedProjects.includes(project.id) ? '收起' : '展开'}项目 ${project.name}`"
+                      :aria-expanded="expandedProjects.includes(project.id)"
+                      @click="toggleProject(project.id)"
+                    >
+                      <ChevronRight
+                        :size="13"
+                        :class="{
+                          'folder-expanded': expandedProjects.includes(
+                            project.id,
+                          ),
+                        }"
+                      /></button
+                    ><RouterLink
+                      :to="`/projects/${project.id}`"
+                      :title="project.name"
+                      ><FolderOpen
+                        v-if="expandedProjects.includes(project.id)"
+                        :size="17"
+                      /><Folder v-else :size="17" /><span>{{
+                        project.name
+                      }}</span></RouterLink
+                    ><SidebarMenu
+                      :label="`项目 ${project.name} 的更多操作`"
+                      :items="projectItems(project)"
+                      @select="projectAction($event, project.id)"
+                    /><button
+                      class="project-add-chat"
+                      :disabled="
+                        creatingChat || !workspace.can('agent:chat:create')
+                      "
+                      :aria-label="`在项目 ${project.name} 下新建聊天`"
+                      @click="startChat(project.id)"
+                    >
+                      <SquarePen :size="16" />
+                    </button>
+                  </div>
+                  <div
+                    v-if="expandedProjects.includes(project.id)"
+                    class="project-conversations"
+                    data-scroll-root
                   >
-                    点击右侧图标开始项目对话
-                  </p>
+                    <ConversationRow
+                      v-for="chat in workspace.listProjectChats(project.id)"
+                      :key="chat.id"
+                      :chat="chat"
+                      @action="chatAction"
+                    />
+                    <InfiniteLoad
+                      :page="workspace.projectPage(project.id)"
+                      :label="`${project.name} 聊天滚动分页`"
+                      :disabled="
+                        sidebarHidden || !workspace.can('agent:chat:project')
+                      "
+                      @load="workspace.loadProjectChats(project.id)"
+                    />
+                    <p
+                      v-if="!workspace.can('agent:chat:project')"
+                      class="sidebar-list-empty"
+                    >
+                      无项目聊天列表权限
+                    </p>
+                    <p
+                      v-if="
+                        !workspace.listProjectChats(project.id).length &&
+                        workspace.projectPage(project.id).initialized &&
+                        !workspace.projectPage(project.id).loading &&
+                        !workspace.projectPage(project.id).error
+                      "
+                      class="sidebar-list-empty"
+                    >
+                      点击右侧图标开始项目对话
+                    </p>
+                  </div>
                 </div>
-              </div>
-            </nav>
-            <p v-if="!projects.length" class="sidebar-list-empty">
-              点击“项目”旁的箭头创建项目
-            </p>
+              </nav>
+              <InfiniteLoad
+                :page="workspace.state.projectsPage"
+                label="项目滚动分页"
+                :disabled="
+                  sidebarHidden || !workspace.can('agent:project:page')
+                "
+                @load="workspace.loadProjects()"
+              />
+              <p
+                v-if="!workspace.can('agent:project:page')"
+                class="sidebar-list-empty"
+              >
+                无项目列表权限
+              </p>
+              <p
+                v-if="
+                  !projects.length &&
+                  workspace.state.projectsPage.initialized &&
+                  !workspace.state.projectsPage.loading &&
+                  !workspace.state.projectsPage.error
+                "
+                class="sidebar-list-empty"
+              >
+                点击“项目”旁的箭头创建项目
+              </p>
+            </div>
           </section>
         </template>
         <!-- 后台保留自己的资源导航，前台的聊天与项目不混入管理菜单。 -->

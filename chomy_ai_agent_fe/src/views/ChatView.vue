@@ -32,6 +32,7 @@ const currentProject = computed(() =>
 );
 const draft = ref(currentChat.value?.draft || ""),
   notice = ref(""),
+  sending = ref(false),
   composer = ref<HTMLTextAreaElement | null>(null);
 const suggestions = [
   {
@@ -58,23 +59,35 @@ function choosePrompt(prompt: string) {
   draft.value = prompt;
   composer.value?.focus();
 }
-/** 未建立窗口时先创建独立/项目窗口，再保留草稿；不调用尚未定义的聊天接口。 */
+/** 未建立窗口时先通过 POST 创建独立/项目聊天，再保留草稿；消息发送接口仍待接入。 */
 async function send() {
-  if (!draft.value.trim()) return;
+  if (!draft.value.trim() || sending.value) return;
+  sending.value = true;
   try {
-    if (!currentChat.value) {
-      const chat = workspace.createChat(
+    if (!currentChat.value || currentChat.value.source === "draft") {
+      const chat = await workspace.createChat(
         currentProject.value?.id ?? null,
         draft.value,
+        currentChat.value?.source === "draft"
+          ? currentChat.value.id
+          : undefined,
       );
       workspace.saveDraft(chat.id, draft.value, true);
-      await router.push({ path: `/chat/${chat.id}`, query: { pending: "1" } });
+      await router.push({
+        path: `/chat/${chat.id}`,
+        query: {
+          pending: "1",
+          ...(chat.projectId ? { projectId: chat.projectId } : {}),
+        },
+      });
       return;
     }
     workspace.saveDraft(currentChat.value.id, draft.value, true);
     notice.value = "聊天服务暂未开放，你的草稿已保留在当前聊天窗口。";
   } catch (cause) {
     notice.value = cause instanceof Error ? cause.message : "暂时无法保存草稿";
+  } finally {
+    sending.value = false;
   }
 }
 /** 输入法组合期间不处理 Enter，Shift+Enter 保留多行输入。 */
@@ -101,7 +114,12 @@ watch(draft, () => {
 if (route.query.pending === "1") {
   notice.value = "聊天服务暂未开放，你的草稿已保留在当前聊天窗口。";
   // 提示只在本次创建窗口后显示，移除一次性标记避免刷新时反复触发。
-  void router.replace({ path: route.path });
+  void router.replace({
+    path: route.path,
+    query: currentChat.value?.projectId
+      ? { projectId: currentChat.value.projectId }
+      : {},
+  });
 }
 onBeforeUnmount(() => {
   clearTimeout(saveTimer);
@@ -142,6 +160,7 @@ onBeforeUnmount(() => {
           placeholder="有什么想聊的，尽管告诉我…"
           rows="2"
           maxlength="20000"
+          :disabled="sending"
           @keydown="onKeydown"
         />
         <div class="composer-toolbar">
@@ -149,7 +168,12 @@ onBeforeUnmount(() => {
           ><button
             class="send-button"
             aria-label="发送消息"
-            :disabled="!draft.trim()"
+            :disabled="
+              !draft.trim() ||
+              sending ||
+              ((!currentChat || currentChat.source === 'draft') &&
+                !workspace.can('agent:chat:create'))
+            "
           >
             <ArrowUp :size="21" />
           </button>

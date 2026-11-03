@@ -153,7 +153,20 @@ VALUES
     (970000000000200017, 970000000000200000, 'agent:project:page', '项目分页', 3, '/user/agent/projects', 'GET', 0, 70, '仅可查看本人全部项目，接口和操作按钮共用此权限码', 0)
 ON CONFLICT (permission_code) DO NOTHING;
 
--- 将本版本全部 19 个权限逐条授予超级管理员，包括目录、菜单和接口/操作按钮。
+-- 修改项目与重命名对话独立授权，每条 INSERT 只插入一行。
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
+    (970000000000200018, 970000000000200000, 'agent:project:update', '修改项目', 3, '/user/agent/projects/{projectId}', 'PUT', 0, 80, '仅可修改本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+INSERT INTO public.sys_permission
+    (id, parent_id, permission_code, permission_name, permission_type, api_path, http_method, status, sort_order, description, created_by)
+VALUES
+    (970000000000200019, 970000000000200000, 'agent:chat:rename', '重命名对话', 3, '/user/agent/chats/{chatId}/name', 'PUT', 0, 90, '仅可修改本人数据，接口和操作按钮共用此权限码', 0)
+ON CONFLICT (permission_code) DO NOTHING;
+
+-- 将本版本全部 21 个权限逐条授予超级管理员，包括目录、菜单和接口/操作按钮。
 -- role_id 固定为超级管理员种子 ID；后续每新增一个权限，必须同步追加一条独立的授权 INSERT 语句。
 -- 关联 ID 沿用权限 ID 加固定偏移后的确定值，直接列出便于核对；重复关系由唯一索引幂等跳过。
 INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
@@ -251,7 +264,18 @@ VALUES
     (971000000000200017, 970000000001000002, 970000000000200017, 0)
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
+-- 新增修改权限同步逐条授予固定种子超级管理员角色。
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200018, 970000000001000002, 970000000000200018, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
+INSERT INTO public.sys_role_permission (id, role_id, permission_id, created_by)
+VALUES
+    (971000000000200019, 970000000001000002, 970000000000200019, 0)
+ON CONFLICT (role_id, permission_id) DO NOTHING;
+
 COMMIT;
 
--- 共初始化 2 个目录、1 个菜单、16 个接口/操作权限；目录和菜单不隐式授予子权限。
+-- 共初始化 2 个目录、1 个菜单、18 个接口/操作权限；目录和菜单不隐式授予子权限。
 -- 已登录用户须撤销旧 Redis 会话或重新登录，以读取新的角色与权限快照。

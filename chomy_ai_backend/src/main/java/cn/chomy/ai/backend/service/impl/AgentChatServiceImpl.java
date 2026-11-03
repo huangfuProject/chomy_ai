@@ -21,7 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * 当前用户对话分页及删除业务，所有读取和单条删除都明确限制所属用户。
+ * 当前用户聊天业务，所有数据读写均明确限制所属用户。
  * 项目与无项目列表包含归档记录，归档列表独立筛选全部已归档对话；名称允许重复。
  * @author chomy
  */
@@ -32,6 +32,96 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
     private final AgentChatMapper chatMapper;
     /** 项目所有权校验及当前页项目名称批量查询。 */
     private final AgentProjectMapper projectMapper;
+
+    /**
+     * 对外创建入口，表单仅接收名称及项目 ID，派生字段和状态由服务端确定。
+     * @param userId 当前认证用户 ID
+     * @param request 名称及可空项目 ID
+     * @return 已持久化的未归档聊天
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public AgentChat createChat(Long userId, CreateAgentChatRequest request) {
+        requireId(userId, "用户不合法");
+        // 空表单必须拒绝，不能默默创建默认名称或其他用户的聊天。
+        if (request == null) { throw new BizException("创建对话参数不能为空"); }
+        // 复用内部创建业务；外层事务覆盖本类方法调用，使项目行锁持续到插入完成。
+        AgentChatType type = request.projectId() == null ? AgentChatType.STANDALONE : AgentChatType.PROJECT;
+        return createChat(userId, request.projectId(), request.chatName(), type);
+    }
+
+    /**
+     * 归档本人聊天，只修改归档字段，不限制当前状态以支持幂等调用。
+     * @param userId 当前认证用户 ID
+     * @param chatId 聊天 ID
+     * @return 归档成功提示
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String archiveChat(Long userId, Long chatId) {
+        // 目标状态使用强类型枚举，不接受客户端任意数字。
+        updateArchiveStatus(userId, chatId, AgentChatArchiveStatus.ARCHIVED);
+        return "对话已归档";
+    }
+
+    /**
+     * 恢复本人聊天，只修改归档字段，不改变原项目、类型或创建时间。
+     * @param userId 当前认证用户 ID
+     * @param chatId 聊天 ID
+     * @return 恢复成功提示
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String restoreChat(Long userId, Long chatId) {
+        // 已未归档的聊天也允许再次恢复，保持接口幂等。
+        updateArchiveStatus(userId, chatId, AgentChatArchiveStatus.UNARCHIVED);
+        return "对话已恢复";
+    }
+
+    /**
+     * 同一事务中校验并锁定目标项目，再原子修改聊天关联，避免与项目删除形成孤立关联。
+     * @param userId 当前认证用户 ID
+     * @param chatId 聊天 ID
+     * @param request 目标项目 ID，为空时移出为无项目聊天
+     * @return 移动成功提示
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public String moveChat(Long userId, Long chatId, MoveAgentChatRequest request) {
+        requireId(userId, "用户不合法");
+        requireId(chatId, "对话不合法");
+        if (request == null) { throw new BizException("移动对话参数不能为空"); }
+        Long projectId = request.projectId();
+        if (projectId != null) {
+            requireId(projectId, "项目不合法");
+            // 先锁项目再更新聊天，与创建及项目删除的锁顺序一致，锁持续到移动事务提交。
+            AgentProject project = projectMapper.selectOne(Wrappers.lambdaQuery(AgentProject.class)
+                    .eq(AgentProject::getId, projectId).eq(AgentProject::getUserId, userId).last("FOR UPDATE"));
+            if (project == null) { throw new BizException("项目不存在或无权访问"); }
+        }
+        AgentChatType type = projectId == null ? AgentChatType.STANDALONE : AgentChatType.PROJECT;
+        // 项目 ID 与类型必须同时更新；显式 set(NULL) 支持移出，不触碰名称及归档状态。
+        int affected = chatMapper.update(null, Wrappers.lambdaUpdate(AgentChat.class)
+                .eq(AgentChat::getId, chatId).eq(AgentChat::getUserId, userId)
+                .set(AgentChat::getProjectId, projectId).set(AgentChat::getType, type));
+        if (affected != 1) { throw new BizException("对话不存在或无权访问"); }
+        return "对话已移动";
+    }
+
+    /**
+     * 在同一次更新中校验所有权并设置归档状态，不通过先查后改暴露竞态窗口。
+     * @param userId 当前认证用户 ID
+     * @param chatId 聊天 ID
+     * @param status 由归档或恢复业务确定的非空枚举状态
+     */
+    private void updateArchiveStatus(Long userId, Long chatId, AgentChatArchiveStatus status) {
+        requireId(userId, "用户不合法");
+        requireId(chatId, "对话不合法");
+        // 所有者与资源 ID 联合匹配；PostgreSQL 对重复设置相同状态也返回匹配行数。
+        int affected = chatMapper.update(null, Wrappers.lambdaUpdate(AgentChat.class)
+                .eq(AgentChat::getId, chatId).eq(AgentChat::getUserId, userId).set(AgentChat::getArchived, status));
+        if (affected != 1) { throw new BizException("对话不存在或无权访问"); }
+    }
 
     /**
      * 内部创建入口，项目写入与删除共同锁定同一项目，防止删除后再写入孤立对话。

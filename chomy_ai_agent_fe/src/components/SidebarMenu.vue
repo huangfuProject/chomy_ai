@@ -11,6 +11,8 @@ const props = defineProps<{
     icon: Component;
     danger?: boolean;
     separator?: boolean;
+    disabled?: boolean;
+    hint?: string;
   }[];
 }>();
 const emit = defineEmits<{ select: [action: string] }>();
@@ -18,6 +20,8 @@ const open = ref(false),
   trigger = ref<HTMLButtonElement | null>(null),
   menu = ref<HTMLElement | null>(null);
 const position = ref({ left: "0px", top: "0px" });
+let anchorTop = 0,
+  anchorLeft = 0;
 function close(restoreFocus = false) {
   open.value = false;
   if (restoreFocus) trigger.value?.focus();
@@ -30,6 +34,8 @@ async function toggle() {
   // 开新菜单前通知其他菜单关闭，保证同一时刻只有一个浮层。
   window.dispatchEvent(new Event("sidebar-menu-open"));
   const box = trigger.value!.getBoundingClientRect();
+  anchorTop = box.top;
+  anchorLeft = box.left;
   const width = Math.min(234, window.innerWidth - 24),
     height = props.items.length * 41 + 28;
   position.value = {
@@ -38,7 +44,9 @@ async function toggle() {
   };
   open.value = true;
   await nextTick();
-  menu.value?.querySelector<HTMLButtonElement>("button")?.focus();
+  menu.value
+    ?.querySelector<HTMLButtonElement>("button:not(:disabled)")
+    ?.focus();
 }
 function outside(event: PointerEvent) {
   if (
@@ -61,8 +69,11 @@ function keyboard(event: KeyboardEvent) {
     return;
   }
   const buttons = [
-    ...(menu.value?.querySelectorAll<HTMLButtonElement>("button") ?? []),
+    ...(menu.value?.querySelectorAll<HTMLButtonElement>(
+      "button:not(:disabled)",
+    ) ?? []),
   ];
+  if (!buttons.length) return;
   const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
   const next =
     event.key === "ArrowDown"
@@ -87,13 +98,20 @@ const dismiss = () => close();
 document.addEventListener("pointerdown", outside);
 window.addEventListener("sidebar-menu-open", dismiss);
 window.addEventListener("resize", dismiss);
-// 用户滚动列表时关闭浮层，防止它继续停留在已经移走的聊天旁边。
-window.addEventListener("scroll", dismiss, true);
+// 只在触发按钮实际移位时关闭；忽略点击/聚焦产生的迟到滚动事件与菜单内部滚动。
+// 否则滚动到条目后立即打开菜单，可能被上一帧排队的滚动通知误关闭。
+function dismissOnAnchorMove() {
+  if (!open.value || !trigger.value) return;
+  const box = trigger.value.getBoundingClientRect();
+  if (Math.abs(box.top - anchorTop) > 1 || Math.abs(box.left - anchorLeft) > 1)
+    close();
+}
+window.addEventListener("scroll", dismissOnAnchorMove, true);
 onBeforeUnmount(() => {
   document.removeEventListener("pointerdown", outside);
   window.removeEventListener("sidebar-menu-open", dismiss);
   window.removeEventListener("resize", dismiss);
-  window.removeEventListener("scroll", dismiss, true);
+  window.removeEventListener("scroll", dismissOnAnchorMove, true);
 });
 </script>
 <template>
@@ -127,6 +145,8 @@ onBeforeUnmount(() => {
         />
         <button
           role="menuitem"
+          :disabled="item.disabled"
+          :title="item.hint"
           :class="{ 'danger-action': item.danger }"
           @click="select(item.id)"
         >

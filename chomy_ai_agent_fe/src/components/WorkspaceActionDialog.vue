@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { X, ArchiveRestore, Trash2 } from "lucide-vue-next";
+import { X, Pencil, Trash2, ArchiveRestore, Folder } from "lucide-vue-next";
 import { workspace } from "../stores/workspace";
+import InfiniteLoad from "./InfiniteLoad.vue";
 
 const router = useRouter(),
   route = useRoute();
@@ -14,19 +15,16 @@ const action = ref(""),
 const name = ref(""),
   description = ref(""),
   targetProject = ref(""),
-  error = ref("");
-const archivedChats = computed(() =>
-  workspace.state.chats.filter((c) => !!c.archivedAt),
-);
+  error = ref(""),
+  busy = ref(false);
+const archivedChats = computed(() => workspace.listArchivedChats());
 const title = computed(() =>
   action.value === "archives"
     ? "已归档聊天"
-    : action.value === "share"
-      ? kind.value === "chat"
-        ? "分享聊天"
-        : "分享项目"
-      : action.value === "move"
-        ? "移至项目"
+    : action.value === "move"
+      ? "移至项目"
+      : action.value === "archive"
+        ? "归档聊天"
         : action.value === "settings"
           ? "项目设置"
           : action.value === "delete"
@@ -37,12 +35,19 @@ const title = computed(() =>
               ? "重命名聊天"
               : "重命名项目",
 );
-/** 集中管理原生模态框，避免每条聊天各自挂载多个弹窗和重复 ID。 */
+/** 请求提交期间锁定当前弹窗，所有数据修改成功后才更新导航、归档列表及路由。 */
 async function open(
   nextAction: string,
   nextId = "",
   nextKind: "chat" | "project" = "chat",
 ) {
+  if (
+    busy.value ||
+    !["archives", "rename", "settings", "delete", "archive", "move"].includes(
+      nextAction,
+    )
+  )
+    return;
   action.value = nextAction;
   kind.value = nextKind;
   id.value = nextId;
@@ -53,31 +58,39 @@ async function open(
     nextKind === "chat" ? (chat?.title ?? "") : (project?.name ?? "");
   description.value = project?.description ?? "";
   targetProject.value = chat?.projectId ?? "";
-  if (nextAction === "archive") {
-    try {
-      workspace.archiveChat(nextId);
-      if (route.params.chatId === nextId) await router.replace("/chat");
-    } catch (cause) {
-      error.value = cause instanceof Error ? cause.message : "归档失败";
-    }
-    if (!error.value) return;
-  }
   if (!dialog.value?.open) dialog.value?.showModal();
+  if (nextAction === "archives" && !workspace.state.archivedPage.initialized)
+    void workspace.loadArchived();
+  if (nextAction === "move" && !workspace.state.projectsPage.initialized)
+    void workspace.loadProjects();
   await nextTick();
   field.value?.focus();
+  // 归档是可恢复操作，点击后直接提交；失败时保留说明和重试按钮，不伪造成功。
+  if (nextAction === "archive") await submit();
 }
-/** 删除及移动均校验真实记录；删除当前页面的数据后回到安全的前台首页。 */
 async function submit() {
+  if (busy.value) return;
+  busy.value = true;
   error.value = "";
   try {
     if (action.value === "rename") {
-      if (kind.value === "chat") workspace.renameChat(id.value, name.value);
-      else workspace.updateProject(id.value, name.value);
+      if (kind.value === "chat")
+        await workspace.renameChat(id.value, name.value);
+      else await workspace.updateProject(id.value, name.value);
     } else if (action.value === "settings")
-      workspace.updateProject(id.value, name.value, description.value);
-    else if (action.value === "move")
-      workspace.moveChat(id.value, targetProject.value || null);
-    else if (action.value === "delete") {
+      await workspace.updateProject(id.value, name.value, description.value);
+    else if (action.value === "archive") {
+      await workspace.archiveChat(id.value);
+      if (route.params.chatId === id.value) await router.replace("/chat");
+    } else if (action.value === "move") {
+      await workspace.moveChat(id.value, targetProject.value || null);
+      // 项目聊天深层链接携带项目 ID；移动当前窗口后同步地址，保证刷新定位新的所属列表。
+      if (route.params.chatId === id.value)
+        await router.replace({
+          path: route.path,
+          query: targetProject.value ? { projectId: targetProject.value } : {},
+        });
+    } else if (action.value === "delete") {
       const activeChat = workspace.state.chats.find(
         (c) => c.id === route.params.chatId,
       );
@@ -86,17 +99,32 @@ async function submit() {
           ? route.params.chatId === id.value
           : route.params.projectId === id.value ||
             activeChat?.projectId === id.value;
-      if (kind.value === "chat") workspace.deleteChat(id.value);
-      else workspace.deleteProject(id.value);
+      if (kind.value === "chat") await workspace.deleteChat(id.value);
+      else await workspace.deleteProject(id.value);
       if (leave) await router.replace("/chat");
     }
     dialog.value?.close();
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : "操作失败，请重试";
+  } finally {
+    busy.value = false;
   }
 }
-function restore(id: string) {
-  workspace.archiveChat(id, false);
+/** 恢复有自己的权限码；失败后保留归档记录和错误提示，成功后滚动分页从第一页刷新。 */
+async function restore(chatId: string) {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = "";
+  try {
+    await workspace.archiveChat(chatId, false);
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : "恢复失败，请重试";
+  } finally {
+    busy.value = false;
+  }
+}
+function close() {
+  if (!busy.value) dialog.value?.close();
 }
 defineExpose({ open });
 </script>
@@ -105,6 +133,8 @@ defineExpose({ open });
     ref="dialog"
     class="project-dialog resource-action-dialog"
     aria-labelledby="resource-action-title"
+    @cancel="busy && $event.preventDefault()"
+    @close="action = ''"
   >
     <form @submit.prevent="submit">
       <div class="dialog-heading">
@@ -113,7 +143,8 @@ defineExpose({ open });
           type="button"
           class="icon-button"
           aria-label="关闭操作窗口"
-          @click="dialog?.close()"
+          :disabled="busy"
+          @click="close"
         >
           <X :size="20" />
         </button>
@@ -127,31 +158,54 @@ defineExpose({ open });
           ref="field"
           v-model="name"
           required
-          :maxlength="kind === 'chat' ? 100 : 64" /><template
-          v-if="action === 'settings'"
+          maxlength="128"
+          :disabled="busy" /><template v-if="action === 'settings'"
           ><label for="resource-description">项目介绍</label
           ><textarea
             id="resource-description"
             v-model="description"
             rows="4"
-            maxlength="500"
+            maxlength="2000"
+            :disabled="busy"
           /></template
       ></template>
       <template v-else-if="action === 'move'"
-        ><p class="muted">选择“{{ name }}”所属的项目。</p>
-        <label for="destination-project">目标项目</label
-        ><select id="destination-project" v-model="targetProject">
-          <option value="">无项目（独立聊天）</option>
-          <option
+        ><p class="muted move-description">选择“{{ name }}”所属的项目。</p>
+        <div
+          class="move-project-options"
+          role="radiogroup"
+          aria-label="目标项目"
+          data-scroll-root
+        >
+          <label class="move-project-option"
+            ><input
+              v-model="targetProject"
+              type="radio"
+              name="target-project"
+              value=""
+              :disabled="busy"
+            /><Folder :size="17" /><span>无项目（独立聊天）</span></label
+          ><label
             v-for="project in workspace.listProjects()"
             :key="project.id"
-            :value="project.id"
-          >
-            {{ project.name }}
-          </option>
-        </select>
-        <p v-if="!workspace.state.projects.length" class="muted">
-          暂无项目，可先从侧栏“项目”菜单创建。
+            class="move-project-option"
+            ><input
+              v-model="targetProject"
+              type="radio"
+              name="target-project"
+              :value="project.id"
+              :disabled="busy"
+            /><Folder :size="17" /><span>{{ project.name }}</span></label
+          ><InfiniteLoad
+            :page="workspace.state.projectsPage"
+            label="移动目标项目滚动分页"
+            :disabled="busy || !workspace.can('agent:project:page')"
+            @load="workspace.loadProjects()"
+          /></div
+      ></template>
+      <template v-else-if="action === 'archive'"
+        ><p class="delete-explanation">
+          正在将“{{ name }}”归档。归档后可从项目菜单的“已归档聊天”中恢复。
         </p></template
       >
       <template v-else-if="action === 'delete'"
@@ -163,59 +217,91 @@ defineExpose({ open });
           }}
         </p></template
       >
-      <template v-else-if="action === 'share'"
-        ><p class="muted share-placeholder">
-          分享功能即将开放，暂时无法创建分享链接。
-        </p></template
-      >
       <template v-else-if="action === 'archives'"
-        ><p v-if="!archivedChats.length" class="muted share-placeholder">
-          暂无已归档聊天。
-        </p>
-        <div v-else class="archived-list">
+        ><div class="archived-list" data-scroll-root>
           <div
             v-for="chat in archivedChats"
             :key="chat.id"
             class="archived-row"
           >
-            <span>{{ chat.title }}</span
+            <span
+              >{{ chat.title
+              }}<small class="archived-project-name">{{
+                chat.projectName || "无项目"
+              }}</small></span
             ><button
               type="button"
               class="icon-button"
               :aria-label="`恢复聊天 ${chat.title}`"
+              :disabled="busy || !workspace.can('agent:chat:restore')"
               @click="restore(chat.id)"
             >
               <ArchiveRestore :size="17" /></button
             ><button
               type="button"
+              class="icon-button"
+              :aria-label="`重命名归档聊天 ${chat.title}`"
+              :disabled="busy || !workspace.can('agent:chat:rename')"
+              @click="open('rename', chat.id)"
+            >
+              <Pencil :size="17" /></button
+            ><button
+              type="button"
               class="icon-button danger-action"
               :aria-label="`永久删除归档聊天 ${chat.title}`"
+              :disabled="busy || !workspace.can('agent:chat:delete')"
               @click="open('delete', chat.id)"
             >
               <Trash2 :size="17" />
             </button>
-          </div></div
-      ></template>
+          </div>
+          <InfiniteLoad
+            :page="workspace.state.archivedPage"
+            label="归档聊天滚动分页"
+            :disabled="busy || !workspace.can('agent:chat:archived')"
+            @load="workspace.loadArchived()"
+          />
+          <p
+            v-if="
+              !archivedChats.length &&
+              workspace.state.archivedPage.initialized &&
+              !workspace.state.archivedPage.loading &&
+              !workspace.state.archivedPage.error
+            "
+            class="muted share-placeholder"
+          >
+            暂无已归档聊天。
+          </p>
+        </div></template
+      >
       <p v-if="error" class="error-message" role="alert">{{ error }}</p>
       <div class="project-dialog-actions">
-        <button type="button" class="text-button" @click="dialog?.close()">
-          {{
-            action === "share" || action === "archives" ? "关闭" : "取消"
-          }}</button
+        <button
+          type="button"
+          class="text-button"
+          :disabled="busy"
+          @click="close"
+        >
+          {{ action === "archives" ? "关闭" : "取消" }}</button
         ><button
-          v-if="!['share', 'archives', 'archive'].includes(action)"
+          v-if="action !== 'archives'"
           class="primary"
           :class="{ 'danger-button': action === 'delete' }"
           :disabled="
-            (action === 'rename' || action === 'settings') && !name.trim()
+            busy ||
+            ((action === 'rename' || action === 'settings') && !name.trim())
           "
         >
           {{
-            action === "delete"
-              ? "永久删除"
-              : action === "move"
-                ? "移动"
-                : "保存"
+            busy
+              ? "正在提交…"
+              : action === "delete"
+                ? "永久删除"
+                : action === "move"
+                  ? "移动"
+                  : action === "archive"
+                    ? "重试归档"
+                    : "保存"
           }}
         </button>
       </div>

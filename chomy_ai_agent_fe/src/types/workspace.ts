@@ -1,42 +1,71 @@
-/** 项目在前端的统一结构；真实接口接入时在适配层转换后端字段。 */
+import type { Page } from "./api";
+
+/** 后端项目字段原样定义；雪花 ID 始终使用字符串，禁止转换为 Number。 */
+export interface AgentProjectDto {
+  id: string;
+  projectName: string;
+  description: string | null;
+  createdAt: string;
+}
+/** 归属与归档为严格数字枚举，不能把空值当成正常状态。 */
+export interface AgentChatDto {
+  id: string;
+  projectId: string | null;
+  projectName?: string | null;
+  chatName: string;
+  type: 0 | 1;
+  archived: 0 | 1;
+  createdAt: string;
+}
 export interface WorkspaceProject {
   id: string;
   name: string;
   description: string;
-  /** 项目置顶偏好；旧版本地记录缺省为未置顶。 */
-  pinned?: boolean;
   createdAt: string;
+  pinned?: boolean;
 }
-
-/** 聊天窗口与草稿，projectId=null 表示独立聊天，不伪造模型回复。 */
+/** draft 只表示未发送的本地窗口，不能将其 UUID 传给 Java 的 Long 参数。 */
 export interface WorkspaceChat {
   id: string;
   projectId: string | null;
+  projectName?: string | null;
   title: string;
   draft: string;
-  /** 归档时间为空或缺省表示未归档，兼容已有本地记录。 */
-  archivedAt?: string | null;
+  archived: 0 | 1;
+  source: "remote" | "draft";
   createdAt: string;
 }
-
-/** 本地临时数据以账号 ID 隔离；该结构不包含密码、令牌或角色权限。 */
-export interface WorkspaceSnapshot {
-  projects: WorkspaceProject[];
-  chats: WorkspaceChat[];
-  sidebarCollapsed: boolean;
+/** 每个列表独立保留页码、实体 ID、请求状态和重试信息，避免项目间共用分页游标。 */
+export interface WorkspacePage {
+  ids: string[];
+  current: number;
+  pages: number;
+  total: number;
+  initialized: boolean;
+  loading: boolean;
+  error: string;
+  version: number;
 }
-
-/**
- * 统一保留三种列表入口：项目、项目聊天、无项目聊天。
- * 当前采用本地适配器；接口协议明确后替换实现，不需要改动侧栏与聊天视图。
- */
-export interface WorkspaceRepository {
-  load(userId: string): WorkspaceSnapshot;
-  save(userId: string, snapshot: WorkspaceSnapshot): void;
-  listProjects(snapshot: WorkspaceSnapshot): WorkspaceProject[];
-  listProjectChats(
-    snapshot: WorkspaceSnapshot,
-    projectId: string,
-  ): WorkspaceChat[];
-  listStandaloneChats(snapshot: WorkspaceSnapshot): WorkspaceChat[];
+/** 可注入的真实 HTTP 边界；测试只替换该边界，不使用生产模拟数据。 */
+export interface WorkspaceApi {
+  projects(current: number): Promise<Page<AgentProjectDto>>;
+  projectChats(projectId: string, current: number): Promise<Page<AgentChatDto>>;
+  standalone(current: number): Promise<Page<AgentChatDto>>;
+  archived(current: number): Promise<Page<AgentChatDto>>;
+  createProject(
+    projectName: string,
+    description: string | null,
+  ): Promise<AgentProjectDto>;
+  updateProject(
+    id: string,
+    projectName: string,
+    description: string | null,
+  ): Promise<string>;
+  deleteProject(id: string): Promise<string>;
+  createChat(chatName: string, projectId: string | null): Promise<AgentChatDto>;
+  archiveChat(id: string): Promise<string>;
+  restoreChat(id: string): Promise<string>;
+  moveChat(id: string, projectId: string | null): Promise<string>;
+  renameChat(id: string, chatName: string): Promise<string>;
+  deleteChat(id: string): Promise<string>;
 }

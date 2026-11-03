@@ -1487,3 +1487,130 @@ dd {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+/* 滚动分页尾部不显示页码；列表错误保留已加载条目，并提供显式重试入口。 */
+.infinite-load {
+  min-height: 12px;
+  padding: 4px 8px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.8;
+  color: #8e9984;
+}
+.infinite-load .text-button {
+  font-size: 10px;
+  padding: 3px 6px;
+}
+.list-load-error {
+  color: #a45b4a;
+  overflow-wrap: anywhere;
+}
+.list-load-error span {
+  display: block;
+}
+.list-end {
+  font-size: 9px;
+  opacity: 0.75;
+}
+.draft-badge {
+  flex-shrink: 0;
+  font-size: 8px;
+  color: #96a28b;
+  margin-left: auto;
+}
+.archived-project-name {
+  display: block;
+  margin-top: 5px;
+  font-size: 10px;
+  color: #969f8c;
+}
+.sidebar-action-menu > button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.sidebar-action-menu > button:disabled:hover {
+  background: transparent;
+}
+
+/* 聊天与项目各自滚动，避免独立聊天不断追加后把项目区推到无法到达的位置。 */
+.sidebar-content {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.chat-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 100px;
+  max-height: 44%;
+  flex: 0 1 auto;
+}
+.chat-section > .new-chat {
+  flex-shrink: 0;
+}
+.conversation-scroll,
+.projects-scroll {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+.projects-section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.project-section-heading {
+  flex-shrink: 0;
+}
+.projects-scroll {
+  flex: 1;
+}
+.project-conversations {
+  max-height: 220px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  overscroll-behavior: contain;
+}
+
+/* 移动目标同样滚动分页，避免原生下拉仅列出已加载的第一页项目。 */
+.move-description {
+  margin-top: 24px;
+}
+.move-project-options {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid #e4e9de;
+  border-radius: 12px;
+  padding: 5px;
+  overscroll-behavior: contain;
+}
+.project-dialog .move-project-option {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 0;
+  padding: 12px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.move-project-option:hover,
+.move-project-option:has(input:checked) {
+  background: #edf2e7;
+}
+.project-dialog .move-project-option input {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  flex-shrink: 0;
+  accent-color: #557647;
+}
+.move-project-option svg {
+  flex-shrink: 0;
+  color: #6d845c;
+}
+.move-project-option span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

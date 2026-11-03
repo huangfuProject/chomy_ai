@@ -335,13 +335,15 @@ V1 建表完成后，执行 `sql/V2__init_rbac_and_user_data.sql`，先初始化
 
 `sys_agent_project` 保存 `id`、`project_name`（最长 128 字符）、`description`（可空，最长 2000 字符）、`user_id` 和 `created_at`。`sys_agent_chat` 保存 `id`、可空 `project_id`、`chat_name`（最长 128 字符）、`type`、`user_id`、`archived` 和 `created_at`。项目名和对话名均允许重复，不建立名称唯一索引。主键使用应用生成的雪花 ID，响应中的 ID 为字符串；创建时间使用 `TIMESTAMPTZ`，由数据库默认生成。
 
-`AgentChatType` 定义 0 无项目、1 有项目；`AgentChatArchiveStatus` 定义 0 未归档、1 已归档。类型为 0 时项目 ID 必须为空，类型为 1 时项目必须存在且属于同一用户。内部 `AgentChatService.createChat` 负责这些校验，并在项目对话写入前锁定项目行，与项目删除互斥；新对话显式设为未归档。这次不提供创建对话或更改归档状态的 HTTP 接口。继承的通用 CRUD 仅供内部可信持久化调用，不能直接作为客户端写入入口；后续对话创建业务应调用上述专用方法。
+`AgentChatType` 定义 0 无项目、1 有项目；`AgentChatArchiveStatus` 定义 0 未归档、1 已归档。类型为 0 时项目 ID 必须为空，类型为 1 时项目必须存在且属于同一用户。内部 `AgentChatService.createChat` 负责这些校验，并在项目对话写入前锁定项目行，与项目删除互斥；新对话显式设为未归档。聊天创建、归档、恢复及移动接口见下方说明。继承的通用 CRUD 仅供内部可信持久化调用，不能直接作为客户端写入入口；后续对话创建业务应调用上述专用方法。
 
-新库继续使用 V0 → V1 → V2：V1 统一创建七张表，V2 插入原有初始化数据和新增七个接口权限。已有数据库尚无项目与对话表时，先手动执行 `sql/V3__create_agent_project_chat_table.sql` 一次，再执行 V4；V3 新增两张表、注释、索引和原六个权限，V4 补齐项目分页权限及超级管理员授权；不要在已有库重复执行全量 V1。项目不会自动执行 SQL。本次不创建外键、CHECK、函数或触发器，关系校验和删除清理在业务代码完成。
+新库继续使用 V0 → V1 → V2：V1 统一创建七张表，V2 插入原有初始化数据和新增九个接口权限。已有数据库尚无项目与对话表时，先手动执行 `sql/V3__create_agent_project_chat_table.sql` 一次，再执行 V4；V3 新增两张表、注释、索引和原六个权限，V4 补齐项目分页权限及超级管理员授权；不要在已有库重复执行全量 V1。项目不会自动执行 SQL。本次不创建外键、CHECK、函数或触发器，关系校验和删除清理在业务代码完成。
 
 | 方法 | 路径 | 用途 | 独立权限码 |
 | --- | --- | --- | --- |
 | GET | `/user/agent/projects` | 本人全部项目分页 | `agent:project:page` |
+| PUT | `/user/agent/projects/{projectId}` | 修改本人项目名称及介绍 | `agent:project:update` |
+| PUT | `/user/agent/chats/{chatId}/name` | 重命名本人对话 | `agent:chat:rename` |
 | POST | `/user/agent/projects` | 创建本人项目 | `agent:project:create` |
 | GET | `/user/agent/projects/{projectId}/chats` | 本人指定项目对话分页 | `agent:chat:project` |
 | GET | `/user/agent/chats/standalone` | 本人非项目对话分页 | `agent:chat:standalone` |
@@ -355,12 +357,35 @@ V1 建表完成后，执行 `sql/V2__init_rbac_and_user_data.sql`，先初始化
 
 项目分页接口为 `GET /user/agent/projects?current=1&size=20`，仅返回已验签 JWT 所属用户的全部项目，不接受客户端指定用户。复用 `AgentPageQuery`：默认第一页、每页 20 条，每页最多 100 条；按 `created_at DESC, id DESC` 排序，响应在统一 `data` 包装中包含 `records`、`total`、`current`、`size`、`pages`。项目记录包含 `id`、`projectName`、`description`、`userId`、`createdAt`，无记录时返回空列表。
 
-新库 V2 已包含独立权限 `agent:project:page` 及超级管理员授权（当前共 19 个权限）。已完成原 V2 或 V3 的数据库需手动执行 `sql/V4__add_agent_project_page_permission.sql`；若原库尚无项目表，先执行 V3，再执行 V4。执行前核对脚本中的固定种子 ID，执行后须撤销受影响用户 Redis 会话或重新登录；其他角色须显式授权。此处仅提供升级文件，没有自动修改数据库。
+新库 V2 已包含独立权限 `agent:project:page` 及超级管理员授权（当前共 21 个权限）。已完成原 V2 或 V3 的数据库需手动执行 `sql/V4__add_agent_project_page_permission.sql`；若原库尚无项目表，先执行 V3，再执行 V4。执行前核对脚本中的固定种子 ID，执行后须撤销受影响用户 Redis 会话或重新登录；其他角色须显式授权。此处仅提供升级文件，没有自动修改数据库。
 
-七个项目及对话权限归属“用户前台”目录，接口与操作按钮共用类型 3 节点。V2 为固定种子 `super_admin` 角色逐条授予全部 19 个权限；已有库通过 V3 授予原 18 个权限，再由 V4 增加项目分页权限，重复执行授权语句不会增加重复关系。后续所有新增权限也必须在对应版本 SQL 中同步授予超级管理员角色，普通角色仍须单独授权；执行后须撤销受影响用户 Redis 会话或重新登录。未登录返回 401，已登录但未授权返回 403；服务专用 HTTP 业务方法也保留独立权限检查。
+九个项目及对话权限归属“用户前台”目录，接口与操作按钮共用类型 3 节点。V2 为固定种子 `super_admin` 角色逐条授予全部 21 个权限；已有库通过 V3 授予原 18 个权限，再由 V4 增加项目分页权限、V5 增加修改项目和重命名对话权限，重复执行授权语句不会增加重复关系。后续所有新增权限也必须在对应版本 SQL 中同步授予超级管理员角色，普通角色仍须单独授权；执行后须撤销受影响用户 Redis 会话或重新登录。未登录返回 401，已登录但未授权返回 403；服务专用 HTTP 业务方法也保留独立权限检查。
+
+修改项目使用 `PUT /user/agent/projects/{projectId}`，JSON 为 `{"projectName":"新项目名","description":"新介绍"}`；名称必填且最多 128 个字符，介绍最多 2000 个字符，省略、null 或空字符串均清空为数据库 NULL。名称去除首尾空白后保存，允许重名，只更新名称和介绍。
+
+重命名对话使用 `PUT /user/agent/chats/{chatId}/name`，JSON 为 `{"chatName":"新对话名"}`；名称必填且最多 128 个字符，去除首尾空白后保存，允许重名。项目、无项目及归档对话均支持重命名，原有项目归属、归档状态和创建时间不变。两个接口均按 JWT 用户 ID 和资源 ID 联合更新，成功返回统一结果包装中的提示文本；他人资源和不存在资源返回相同业务错误。
+
+已有数据库需手动执行 `sql/V5__add_agent_update_permissions.sql`，新增 `agent:project:update` 与 `agent:chat:rename` 两个独立权限，并逐条授予固定种子超级管理员角色；新库 V2 已包含相同权限。执行前核对固定种子 ID，执行后撤销受影响用户 Redis 会话或要求重新登录。未自动执行数据库脚本。
+
+### 聊天创建、归档、恢复和移动
+
+新增权限集中在独立文件 `sql/V6__add_agent_chat_lifecycle_permissions.sql`，不写回 V2；新库也须在 V2 后执行 V6。已有库须先确保项目及聊天表存在，缺失时先执行 V3；V4 和 V5 仍分别维护前述分页和修改权限。V6 每条 INSERT 仅插入一行，新增四个独立权限并逐条授予固定种子超级管理员，其他角色需显式授权。执行前核对固定种子 ID，执行后撤销受影响用户 Redis 会话或要求重新登录。
+
+| 方法 | 路径 | 请求体 | 权限 |
+| --- | --- | --- | --- |
+| POST | `/user/agent/chats` | `{"chatName":"新聊天","projectId":null}` | `agent:chat:create` |
+| PUT | `/user/agent/chats/{chatId}/archive` | 无 | `agent:chat:archive` |
+| PUT | `/user/agent/chats/{chatId}/restore` | 无 | `agent:chat:restore` |
+| PUT | `/user/agent/chats/{chatId}/move` | `{"projectId":123}` 或 `{"projectId":null}` | `agent:chat:move` |
+
+创建时名称必填、最多 128 个字符，去除首尾空白后保存，允许重名；项目 ID 可省略或为 null，表示无项目聊天，否则必须为本人有效项目。类型由服务端推导，初始归档状态固定为未归档，返回持久化后的聊天实体和数据库创建时间。客户端无法设置所有者、类型或初始归档状态。
+
+归档与恢复均幂等，仅修改本人聊天的归档状态，不改变项目归属。移动支持本人项目间移动、无项目聊天移入项目，以及移出为无项目聊天（目标项目 ID 省略或 null）；移动请求体必须提供。项目 ID 与类型在同一次 UPDATE 中同步更新，名称、归档状态和创建时间保持不变。移入目标项目时先校验所有权并在事务内锁定项目行，与项目删除和创建采用相同锁顺序，防止产生孤立关联。归档、恢复和移动成功时返回统一包装中的提示文本。
+
+原有项目及无项目分页继续包含归档记录，归档分页仅展示已归档聊天。所有接口从验签 JWT 获取用户 ID，未登录为 401、缺少对应独立权限为 403，资源不存在或非本人所有时返回相同业务错误。本次仅提供 SQL 文件，不自动修改数据库。
 
 ### 初始化插入语句规范
 
-静态初始化和升级数据统一采用单行插入语句 `INSERT INTO ... VALUES (...);`，每条 INSERT 只插入一行，保留 VALUES 关键字，不使用多组 VALUES 批量插入；直接列出菜单父 ID、用户角色关联和超级管理员授权（V2 共 19 条，V3 原 18 条，V4 补充 1 条）。V2、V3 和 V4 不使用 `INSERT ... SELECT` 或 JOIN 组装静态数据；授权关系 ID 沿用原有确定值，重复关系通过 `ON CONFLICT` 跳过。后续新增权限时，必须在对应版本脚本中同步追加独立的超级管理员授权 INSERT 语句。
+静态初始化和升级数据统一采用单行插入语句 `INSERT INTO ... VALUES (...);`，每条 INSERT 只插入一行，保留 VALUES 关键字，不使用多组 VALUES 批量插入；直接列出菜单父 ID、用户角色关联和超级管理员授权（V2 共 21 条，V3 原 18 条，V4 补充 1 条，V5 补充 2 条）。V2、V3、V4 和 V5 不使用 `INSERT ... SELECT` 或 JOIN 组装静态数据；授权关系 ID 沿用原有确定值，重复关系通过 `ON CONFLICT` 跳过。后续新增权限时，必须在对应版本脚本中同步追加独立的超级管理员授权 INSERT 语句。
 
 所有关联使用 V2 中的固定种子 ID。已有数据库执行前须核对同编码目录、菜单、权限以及 `admin`、`super_admin` 的 ID 与脚本一致；自定义 ID 须先调整脚本中的关联值。脚本仅授权明确列出的权限，自定义权限需额外列出授权行，不再扫描权限表。

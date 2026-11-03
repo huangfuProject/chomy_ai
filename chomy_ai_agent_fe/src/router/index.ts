@@ -94,28 +94,29 @@ router.beforeEach(async (to) => {
     }
   }
   const permissions = session.data?.permissions ?? [];
-  // 本地记录只在服务器认证通过后按当前账号加载，禁止通过另一个账号的 URL 打开窗口。
-  workspace.load(session.data?.user.id ?? "");
-  if (
-    to.params.chatId &&
-    !workspace.state.chats.some(
-      (chat) => chat.id === to.params.chatId && !chat.archivedAt,
-    )
-  )
-    return landingPath(permissions);
-  if (
-    to.params.projectId &&
-    !workspace.state.projects.some(
-      (project) => project.id === to.params.projectId,
-    )
-  )
-    return landingPath(permissions);
   const landing = landingPath(permissions);
   if (to.path === "/login" || to.path === "/") return landing;
   if (landing === "/no-access") return to.path === landing ? true : landing;
   if (to.path === "/no-access") return landing;
   const area = to.meta.area as Area | undefined;
   if (area && !hasArea(permissions, area)) return landing;
+  // 认证及区域授权通过后，才按服务端分页定位资源；项目聊天的链接携带项目 ID。
+  workspace.load(session.data?.user.id ?? "");
+  const userId = session.data?.user.id;
+  const projectId =
+    typeof to.params.projectId === "string"
+      ? to.params.projectId
+      : typeof to.query.projectId === "string"
+        ? to.query.projectId
+        : null;
+  if (projectId && !(await workspace.ensureProject(projectId))) return "/chat";
+  if (
+    typeof to.params.chatId === "string" &&
+    !(await workspace.ensureChat(to.params.chatId, projectId))
+  )
+    return "/chat";
+  // 等待分页期间可能退出或切换账户，旧导航不能继续挂载前一个用户的数据。
+  if (!session.data || userId !== session.data.user.id) return "/login";
   if (
     area &&
     to.meta.menu &&

@@ -1,6 +1,7 @@
 package cn.chomy.ai.backend.controller.user;
 
 import cn.chomy.ai.backend.dto.agent.*;
+import cn.chomy.ai.backend.entity.AgentChat;
 import cn.chomy.ai.backend.service.AgentChatService;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.Valid;
@@ -11,7 +12,7 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * 当前用户对话入口，参数中不接受所属用户；所有分页与删除均由服务层实施所有权隔离。
+ * 当前用户对话入口，参数中不接受所属用户；所有数据读写均由服务层实施所有权隔离。
  * @author chomy
  */
 // 使用 Spring MVC 原生方法参数校验，不以类级 Validated 切换到额外的 AOP 校验路径。
@@ -19,8 +20,61 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/user/agent/chats")
 @RequiredArgsConstructor
 public class AgentChatController {
-    /** 对话分页、重命名与删除业务。 */
+    /** 对话创建、分页、归档恢复、移动、重命名与删除业务。 */
     private final AgentChatService chatService;
+
+    /**
+     * 创建本人聊天，项目可空，初始归档状态由服务端固定。
+     * @param jwt 已验签的认证主体
+     * @param request 名称及可空项目 ID
+     * @return 新建聊天
+     */
+    @PostMapping
+    public AgentChat create(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody CreateAgentChatRequest request) {
+        // 只传递白名单字段，忽略客户端提供的所有者、类型及归档状态。
+        return chatService.createChat(Long.valueOf(jwt.getSubject()), request);
+    }
+
+    /**
+     * 归档本人聊天，重复归档仍成功。
+     * @param jwt 已验签的认证主体
+     * @param chatId 正数聊天 ID
+     * @return 归档成功提示
+     */
+    @PutMapping("/{chatId}/archive")
+    public String archive(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable @Positive(message = "对话ID必须大于零") Long chatId) {
+        // 归档状态由固定业务操作决定，不接收客户端任意状态编码。
+        return chatService.archiveChat(Long.valueOf(jwt.getSubject()), chatId);
+    }
+
+    /**
+     * 将本人聊天恢复为未归档，重复恢复仍成功。
+     * @param jwt 已验签的认证主体
+     * @param chatId 正数聊天 ID
+     * @return 恢复成功提示
+     */
+    @PutMapping("/{chatId}/restore")
+    public String restore(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable @Positive(message = "对话ID必须大于零") Long chatId) {
+        // 恢复独立鉴权，拥有归档权限不代表拥有恢复权限。
+        return chatService.restoreChat(Long.valueOf(jwt.getSubject()), chatId);
+    }
+
+    /**
+     * 移动本人聊天到本人项目，或移出为无项目聊天。
+     * @param jwt 已验签的认证主体
+     * @param chatId 正数聊天 ID
+     * @param request 目标项目 ID；为空时移出，保持原归档状态
+     * @return 移动成功提示
+     */
+    @PutMapping("/{chatId}/move")
+    public String move(@AuthenticationPrincipal Jwt jwt,
+            @PathVariable @Positive(message = "对话ID必须大于零") Long chatId,
+            @Valid @RequestBody MoveAgentChatRequest request) {
+        // 项目校验、行锁与关联字段同步更新由事务服务统一完成。
+        return chatService.moveChat(Long.valueOf(jwt.getSubject()), chatId, request);
+    }
 
     /**
      * 分页读取本人无项目对话，包含归档记录。

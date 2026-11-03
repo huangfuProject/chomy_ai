@@ -173,6 +173,118 @@ class AgentWorkspaceServiceTest {
         verifyNoInteractions(projects, chats);
     }
 
+    /** HTTP 创建表单只决定名称及项目，归属类型与初始归档状态由服务端推导。 */
+    @Test
+    void createsChatFromWhitelistRequest() {
+        when(chats.insert(any(AgentChat.class))).thenAnswer(call -> {
+            AgentChat row = call.getArgument(0); row.setId(100L); return 1;
+        });
+        when(chats.selectById(100L)).thenReturn(chat(100L, null));
+        chatService.createChat(1L, new CreateAgentChatRequest(" 新聊天 ", null));
+        ArgumentCaptor<AgentChat> capture = ArgumentCaptor.forClass(AgentChat.class);
+        verify(chats).insert(capture.capture());
+        assertThat(capture.getValue().getUserId()).isEqualTo(1L);
+        assertThat(capture.getValue().getChatName()).isEqualTo("新聊天");
+        assertThat(capture.getValue().getProjectId()).isNull();
+        assertThat(capture.getValue().getType()).isEqualTo(AgentChatType.STANDALONE);
+        assertThat(capture.getValue().getArchived()).isEqualTo(AgentChatArchiveStatus.UNARCHIVED);
+        verifyNoInteractions(projects);
+    }
+
+    /** 创建入口不能关联他人或不存在的项目，也不能接受空表单、非法项目 ID 或名称。 */
+    @Test
+    void rejectsInvalidChatCreateRequest() {
+        assertThatThrownBy(() -> chatService.createChat(1L, new CreateAgentChatRequest("聊天", 50L)))
+                .hasMessage("项目不存在或无权访问");
+        assertThatThrownBy(() -> chatService.createChat(1L, new CreateAgentChatRequest("聊天", 0L)))
+                .isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.createChat(1L, new CreateAgentChatRequest(" ", null)))
+                .isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.createChat(1L, (CreateAgentChatRequest) null)).isInstanceOf(BizException.class);
+        verifyNoInteractions(chats);
+    }
+
+    /** 归档和恢复只改归档字段，所有权始终受限，重复调用无需预先读取聊天。 */
+    @Test
+    void archiveAndRestoreOnlyChangeOwnedStatus() {
+        when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        for (int i = 0; i < 2; i++) {
+            assertThat(chatService.archiveChat(1L, 100L)).isEqualTo("对话已归档");
+            assertThat(chatService.restoreChat(1L, 100L)).isEqualTo("对话已恢复");
+        }
+        ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(chats, times(4)).update(isNull(), capture.capture());
+        for (int i = 0; i < 4; i++) {
+            var update = capture.getAllValues().get(i);
+            assertOwned(update, "id", 100L); assertOwned(update, "user_id", 1L);
+            assertThat(update.getSqlSet()).startsWith("archived=").doesNotContain(",");
+            assertThat(update.getParamNameValuePairs()).containsValue(i % 2 == 0
+                    ? AgentChatArchiveStatus.ARCHIVED : AgentChatArchiveStatus.UNARCHIVED);
+        }
+        verifyNoInteractions(projects);
+    }
+
+    /** 移动先锁本人目标项目再更新聊天，项目 ID 和归属类型同步修改，原归档状态保持。 */
+    @Test
+    void movesChatUnderTargetProjectLock() {
+        when(projects.selectOne(any(Wrapper.class))).thenReturn(project(20L, "目标项目"));
+        when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        assertThat(chatService.moveChat(1L, 100L, new MoveAgentChatRequest(20L))).isEqualTo("对话已移动");
+        var order = inOrder(projects, chats);
+        ArgumentCaptor<Wrapper> lock = ArgumentCaptor.forClass(Wrapper.class);
+        order.verify(projects).selectOne(lock.capture());
+        assertOwned(lock.getValue(), "id", 20L); assertOwned(lock.getValue(), "user_id", 1L);
+        assertThat(lock.getValue().getSqlSegment()).contains("FOR UPDATE");
+        ArgumentCaptor<LambdaUpdateWrapper> update = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        order.verify(chats).update(isNull(), update.capture());
+        assertOwned(update.getValue(), "id", 100L); assertOwned(update.getValue(), "user_id", 1L);
+        assertThat(update.getValue().getSqlSet()).contains("project_id=", "type=").doesNotContain("archived", "created_at", "chat_name");
+        assertThat(update.getValue().getParamNameValuePairs()).containsValue(20L).containsValue(AgentChatType.PROJECT);
+    }
+
+    /** 移出项目必须显式写入 NULL 并改为无项目类型，无需查询项目表。 */
+    @Test
+    void movesChatToStandalone() {
+        when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
+        chatService.moveChat(1L, 100L, new MoveAgentChatRequest(null));
+        ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
+        verify(chats).update(isNull(), capture.capture());
+        assertOwned(capture.getValue(), "id", 100L); assertOwned(capture.getValue(), "user_id", 1L);
+        assertThat(capture.getValue().getSqlSet()).contains("project_id=", "type=").doesNotContain("archived");
+        assertThat(capture.getValue().getParamNameValuePairs()).containsValue(null).containsValue(AgentChatType.STANDALONE);
+        verifyNoInteractions(projects);
+    }
+
+    /** 目标项目不存在或不属于本人时不得更新聊天。 */
+    @Test
+    void rejectsForeignMoveTargetBeforeWriting() {
+        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, new MoveAgentChatRequest(20L)))
+                .hasMessage("项目不存在或无权访问");
+        verifyNoInteractions(chats);
+    }
+
+    /** 归档、恢复和移动对不存在或他人聊天统一失败，不能假报成功。 */
+    @Test
+    void lifecycleRejectsUnownedChats() {
+        assertThatThrownBy(() -> chatService.archiveChat(1L, 100L)).hasMessage("对话不存在或无权访问");
+        assertThatThrownBy(() -> chatService.restoreChat(1L, 100L)).hasMessage("对话不存在或无权访问");
+        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, new MoveAgentChatRequest(null)))
+                .hasMessage("对话不存在或无权访问");
+        verifyNoInteractions(projects);
+    }
+
+    /** 内部入口同样校验身份、聊天 ID 和目标项目边界，非法请求不得触碰存储。 */
+    @Test
+    void lifecycleValidatesIdsAndNullRequest() {
+        assertThatThrownBy(() -> chatService.archiveChat(null, 100L)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.restoreChat(1L, 0L)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, null)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, new MoveAgentChatRequest(-1L))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(0L, 100L, new MoveAgentChatRequest(null))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(1L, 0L, new MoveAgentChatRequest(null))).isInstanceOf(BizException.class);
+        verifyNoInteractions(projects, chats);
+    }
+
     /** 同名项目不得判重，所有者由认证参数指定，并返回数据库创建时间。 */
     @Test
     void allowsDuplicateProjectNames() {

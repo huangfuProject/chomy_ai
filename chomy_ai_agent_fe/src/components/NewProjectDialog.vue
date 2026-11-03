@@ -19,12 +19,15 @@ async function open() {
   await nextTick();
   nameInput.value?.focus();
 }
-function submit() {
+async function submit() {
   if (busy.value) return;
   busy.value = true;
   error.value = "";
   try {
-    const project = workspace.createProject(name.value, description.value);
+    const project = await workspace.createProject(
+      name.value,
+      description.value,
+    );
     dialog.value?.close();
     emit("created", project.id);
   } catch (cause) {
@@ -42,6 +45,7 @@ defineExpose({ open });
     ref="dialog"
     class="project-dialog"
     aria-labelledby="new-project-title"
+    @cancel="busy && $event.preventDefault()"
   >
     <form @submit.prevent="submit">
       <div class="dialog-heading">
@@ -50,7 +54,8 @@ defineExpose({ open });
           type="button"
           class="icon-button"
           aria-label="关闭新建项目"
-          @click="dialog?.close()"
+          @click="!busy && dialog?.close()"
+          :disabled="busy"
         >
           <X :size="20" />
         </button>
@@ -63,7 +68,8 @@ defineExpose({ open });
         ref="nameInput"
         v-model="name"
         placeholder="例如：我的第一个项目"
-        maxlength="64"
+        maxlength="128"
+        :disabled="busy"
         required
       />
       <label for="project-description">项目介绍 <span>选填</span></label
@@ -72,11 +78,17 @@ defineExpose({ open });
         v-model="description"
         placeholder="介绍一下这个项目，或你想达成的目标…"
         rows="4"
-        maxlength="500"
-      /><small class="character-count">{{ description.length }} / 500</small>
+        maxlength="2000"
+        :disabled="busy"
+      /><small class="character-count">{{ description.length }} / 2000</small>
       <p v-if="error" class="error-message" role="alert">{{ error }}</p>
       <div class="project-dialog-actions">
-        <button type="button" class="text-button" @click="dialog?.close()">
+        <button
+          type="button"
+          class="text-button"
+          @click="!busy && dialog?.close()"
+          :disabled="busy"
+        >
           取消</button
         ><button class="primary" :disabled="busy || !name.trim()">
           {{ busy ? "正在创建…" : "创建项目" }}
