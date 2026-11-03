@@ -66,6 +66,8 @@ export interface WorkspaceApi {
   archiveChat(id: string): Promise<string>;
   restoreChat(id: string): Promise<string>;
   moveChat(id: string, projectId: string | null): Promise<string>;
+  /** 名称生成仅预览，不自动持久化；调用方需另行保存名称。 */
+  generateChatName(message: string): Promise<{ chatName: string }>;
   renameChat(id: string, chatName: string): Promise<string>;
   deleteChat(id: string): Promise<string>;
 }

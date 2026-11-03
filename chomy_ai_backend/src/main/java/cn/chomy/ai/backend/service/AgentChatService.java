@@ -13,6 +13,15 @@ import org.springframework.security.access.prepost.PreAuthorize;
  */
 public interface AgentChatService extends IService<AgentChat> {
     /**
+     * 根据一句话生成聊天名称，当前为文本截取占位，不创建或更新聊天。
+     * @param userId 已验签 JWT 用户 ID
+     * @param request 最多 2000 个字符的命名文本
+     * @return 名称预览结果，后续可在实现层替换为模型生成
+     */
+    @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.AgentPermission).CHAT_GENERATE_NAME.code)")
+    AgentChatNameResponse generateName(Long userId, GenerateAgentChatNameRequest request);
+
+    /**
      * 创建本人聊天，服务端推导归属类型并固定初始状态为未归档。
      * @param userId 已验签 JWT 用户 ID
      * @param request 名称及可空的本人项目 ID

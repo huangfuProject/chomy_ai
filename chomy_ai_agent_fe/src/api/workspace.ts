@@ -65,6 +65,11 @@ export const workspaceApi: WorkspaceApi = {
       body: JSON.stringify({ projectId }),
     });
   },
+  generateChatName: (message) =>
+    request<{ chatName: string }>(`${chats}/name/generate`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
+    }),
   renameChat: (id, chatName) =>
     request<string>(`${chats}/${resourceId(id)}/name`, {
       method: "PUT",

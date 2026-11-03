@@ -10,6 +10,8 @@ import cn.chomy.ai.backend.enums.AgentPermission;
 import cn.chomy.ai.backend.dto.agent.UpdateAgentProjectRequest;
 import cn.chomy.ai.backend.dto.agent.CreateAgentChatRequest;
 import cn.chomy.ai.backend.dto.agent.MoveAgentChatRequest;
+import cn.chomy.ai.backend.dto.agent.GenerateAgentChatNameRequest;
+import cn.chomy.ai.backend.dto.agent.AgentChatNameResponse;
 import cn.chomy.ai.backend.dto.agent.RenameAgentChatRequest;
 import org.springframework.security.access.AccessDeniedException;
 
@@ -669,6 +671,51 @@ class SecurityIntegrationTest {
         verifyNoInteractions(store.agentChats);
     }
 
+    /** 名称生成独立鉴权并传递 JWT 身份，响应结构固定为 data.chatName。 */
+    @Test
+    void generatesChatNameWithIndependentPermission() throws Exception {
+        mvc.perform(post("/user/agent/chats/name/generate").contentType("application/json")
+                .content("{\"message\":\"帮我学习Java\"}")).andExpect(status().isUnauthorized());
+        grantAgentPermissions(AgentPermission.CHAT_CREATE);
+        String createToken = login();
+        mvc.perform(post("/user/agent/chats/name/generate").header("Authorization", "Bearer " + createToken)
+                .contentType("application/json").content("{\"message\":\"帮我学习Java\"}"))
+                .andExpect(status().isForbidden());
+        // 非 HTTP 调用同样检查方法级权限，创建权限不能隐式授予生成名称权限。
+        var authentication = context.getBean(JwtSessionService.class).authenticate(context.getBean(JwtDecoder.class).decode(createToken));
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
+        try {
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class)
+                    .generateName(1L, new GenerateAgentChatNameRequest("文本"))).isInstanceOf(AccessDeniedException.class);
+        } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
+        grantAgentPermissions(AgentPermission.CHAT_GENERATE_NAME);
+        when(store.agentChats.generateName(anyLong(), any())).thenReturn(new AgentChatNameResponse("帮我学习Java"));
+        String token = login();
+        mvc.perform(post("/user/agent/chats/name/generate").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"message\":\"帮我学习Java\",\"userId\":999}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.chatName").value("帮我学习Java"));
+        verify(store.agentChats).generateName(eq(1L), eq(new GenerateAgentChatNameRequest("帮我学习Java")));
+        // 生成权限仅用于预览名称，不能直接创建聊天。
+        mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"chatName\":\"名称\"}"))
+                .andExpect(status().isForbidden());
+    }
+
+    /** 名称生成表单的空文本、空请求体及超长文本在 MVC 层返回 400。 */
+    @Test
+    void validatesChatNameGenerationInput() throws Exception {
+        grantAgentPermissions(AgentPermission.CHAT_GENERATE_NAME);
+        String token = login();
+        for (String body : List.of("{}", "null", "{\"message\":\" \"}",
+                json.writeValueAsString(new GenerateAgentChatNameRequest("字".repeat(2001))))) {
+            mvc.perform(post("/user/agent/chats/name/generate").header("Authorization", "Bearer " + token)
+                    .contentType("application/json").content(body)).andExpect(status().isBadRequest());
+        }
+        mvc.perform(post("/user/agent/chats/name/generate").header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(store.agentChats);
+    }
+
     /** 表单和页码校验失败应返回 400，不能将非法参数交给业务层。 */
     @Test
     void agentEndpointsValidateInputs() throws Exception {
@@ -687,7 +734,7 @@ class SecurityIntegrationTest {
     }
 
     /**
-     * 从真实 V2/V6 提取全部 Agent 接口资源，只向测试账户授予指定权限。
+     * 从真实 V2/V6/V7 提取全部 Agent 接口资源，只向测试账户授予指定权限。
      * @param granted 本次测试允许的独立权限
      */
     private void grantAgentPermissions(AgentPermission... granted) throws Exception {
@@ -696,6 +743,9 @@ class SecurityIntegrationTest {
         // 新增生命周期权限仅存在独立 V6，测试必须合并实际执行脚本的资源定义。
         sql += java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
                 "sql", "V6__add_agent_chat_lifecycle_permissions.sql"));
+        // 名称生成的独立权限在 V7 中定义，测试读取真实路由以覆盖默认拒绝规则。
+        sql += java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
+                "sql", "V7__add_agent_chat_name_permission.sql"));
         List<Permission> resources = new ArrayList<>();
         // 使用种子中真实路径和方法，避免测试自行声明一套与部署数据不同的权限。
         var matcher = Pattern.compile("\\((\\d+), \\d+, '(agent:[^']+)', '[^']+', 3, '([^']+)', '([A-Z]+)',").matcher(sql);

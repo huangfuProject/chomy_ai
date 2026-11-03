@@ -53,21 +53,22 @@ npm test
 
 当前按 `AgentProjectController` 和 `AgentChatController` 对接以下接口，统一使用 Bearer JWT 及 `{code,message,data,durationMs}` 响应：
 
-| 方法与路径                            | 功能                 | 独立权限                |
-| ------------------------------------- | -------------------- | ----------------------- |
-| `GET /user/agent/projects`            | 项目分页             | `agent:project:page`    |
-| `POST /user/agent/projects`           | 创建项目             | `agent:project:create`  |
-| `PUT /user/agent/projects/{id}`       | 修改项目名称、介绍   | `agent:project:update`  |
-| `DELETE /user/agent/projects/{id}`    | 删除项目及其全部聊天 | `agent:project:delete`  |
-| `GET /user/agent/projects/{id}/chats` | 项目聊天分页         | `agent:chat:project`    |
-| `GET /user/agent/chats/standalone`    | 独立聊天分页         | `agent:chat:standalone` |
-| `GET /user/agent/chats/archived`      | 全部归档聊天分页     | `agent:chat:archived`   |
-| `POST /user/agent/chats`              | 创建独立或项目聊天   | `agent:chat:create`     |
-| `PUT /user/agent/chats/{id}/archive`  | 归档聊天             | `agent:chat:archive`    |
-| `PUT /user/agent/chats/{id}/restore`  | 恢复聊天             | `agent:chat:restore`    |
-| `PUT /user/agent/chats/{id}/move`     | 移动聊天或移出项目   | `agent:chat:move`       |
-| `PUT /user/agent/chats/{id}/name`     | 重命名聊天           | `agent:chat:rename`     |
-| `DELETE /user/agent/chats/{id}`       | 永久删除聊天         | `agent:chat:delete`     |
+| 方法与路径                             | 功能                           | 独立权限                   |
+| -------------------------------------- | ------------------------------ | -------------------------- |
+| `GET /user/agent/projects`             | 项目分页                       | `agent:project:page`       |
+| `POST /user/agent/projects`            | 创建项目                       | `agent:project:create`     |
+| `PUT /user/agent/projects/{id}`        | 修改项目名称、介绍             | `agent:project:update`     |
+| `DELETE /user/agent/projects/{id}`     | 删除项目及其全部聊天           | `agent:project:delete`     |
+| `GET /user/agent/projects/{id}/chats`  | 项目聊天分页                   | `agent:chat:project`       |
+| `GET /user/agent/chats/standalone`     | 独立聊天分页                   | `agent:chat:standalone`    |
+| `GET /user/agent/chats/archived`       | 全部归档聊天分页               | `agent:chat:archived`      |
+| `POST /user/agent/chats`               | 创建独立或项目聊天             | `agent:chat:create`        |
+| `PUT /user/agent/chats/{id}/archive`   | 归档聊天                       | `agent:chat:archive`       |
+| `PUT /user/agent/chats/{id}/restore`   | 恢复聊天                       | `agent:chat:restore`       |
+| `PUT /user/agent/chats/{id}/move`      | 移动聊天或移出项目             | `agent:chat:move`          |
+| `POST /user/agent/chats/name/generate` | 首次内容生成名称（仅返回预览） | `agent:chat:generate-name` |
+| `PUT /user/agent/chats/{id}/name`      | 重命名聊天                     | `agent:chat:rename`        |
+| `DELETE /user/agent/chats/{id}`        | 永久删除聊天                   | `agent:chat:delete`        |
 
 创建及修改项目发送 `{projectName,description}`；只修改项目名时也传入原介绍，避免 PUT 将介绍清空。名称最多 128 字符，介绍最多 2000 字符。聊天创建发送 `{chatName,projectId}`，无项目时 `projectId=null`；重命名发送 `{chatName}`，名称最多 128 字符。归档、恢复使用不带请求体的 PUT；移动发送 `{projectId}`，为空时移出为独立聊天。项目 ID 以字符串发送并由 Jackson 绑定 Long，不使用 JS Number 转换。服务端 ID 始终为字符串；不向接口发送用户 ID、归档状态或创建时间。
 
@@ -75,7 +76,8 @@ npm test
 - 独立聊天和项目分别滚动；每个展开的项目聊天拥有自己的滚动容器与分页状态，避免聊天过多把项目区推到不可达位置。归档弹窗同样滚动分页，显示所属项目名。后端项目聊天及独立聊天分页包含归档记录，前端严格按 `archived=0` 过滤普通导航；归档数字为空或未知时拒绝响应，不默认为正常。
 - “项目”标题下拉提供创建及归档列表；头像弹窗显示前台授权菜单，“管理后端”固定在“退出登录”紧上方。每个请求及写入按钮均检查对应完整权限码，菜单不隐式授予接口权限。后端 403/503 不会降级为本地成功。
 - 服务端项目创建、修改、聊天重命名和删除均等待请求成功后更新界面。插入/删除后重置受影响分页，避免 OFFSET 变化造成漏项；账户切换、列表重置及写入后的旧响应不会覆盖新数据或恢复已删除记录。
-- 新聊天按钮及项目行撰写按钮通过 POST 建立真实聊天，取得服务端 ID 后再导航。归档、恢复、移动分别使用独立权限码并等待服务端成功；移动目标列表也采用滚动分页，移动当前聊天后同步深层链接的项目 ID。分享接口仍未提供，分享入口暂不可用，不创建无效链接。
+- 新聊天按钮及项目行撰写按钮通过 POST 建立真实聊天，取得服务端 ID 后再导航。创建名称统一为“新聊天”，无论是否带有输入草稿，前端均不再从草稿截取标题。归档、恢复、移动分别使用独立权限码并等待服务端成功；移动目标列表也采用滚动分页，移动当前聊天后同步深层链接的项目 ID。分享接口仍未提供，分享入口暂不可用，不创建无效链接。
+- 首次点击发送时，调用 `POST /user/agent/chats/name/generate`，请求体 `{message}`、结果 `{chatName}`。该接口不写入聊天，所以生成成功后再调用重命名接口持久化，分别检查生成及重命名权限。命名输入最多取首次内容前 2000 个 UTF-16 字符（避免截断 emoji 代理对），完整草稿不裁切；后续提交不重复生成，手动改名优先。成功标记按账号保存在浏览器中，即使结果仍是“新聊天”，刷新后也不重复生成；失败保留默认名及首次文本，支持原内容重试。模型消息发送接口仍未接入，发送按钮目前只保存草稿并执行上述命名流程。
 - 项目置顶与侧栏折叠是当前浏览器偏好，服务端聊天的输入草稿也按账号保存在本地；项目和已持久化聊天列表始终以接口结果为准。旧 `chomy.workspace.v1:*` 模拟数据保留原样但不再作为真实资源载入，也不会自动上传到数据库。兼容读取上个前端版本的 `draft-*` 未发送窗口，用户显式发送时才通过 POST 升级为真实聊天。
 - 刷新项目聊天链接携带 `projectId`，路由守卫通过服务端分页定位当前账号资源。当前没有项目/聊天详情 HTTP 接口，未缓存的深层地址可能需要依次读取相应列表页；权限不足或读取失败返回工作区首页并保留列表错误。后续增加详情接口后可优化定位请求。
 - 新增权限由后端版本 SQL 持久化授予超级管理员；部署更新后需撤销旧 Redis 会话或重新登录以取得最新权限快照。

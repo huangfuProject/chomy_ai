@@ -56,23 +56,33 @@ const suggestions = [
 ];
 /** 仅填入草稿，不伪造 AI 回复；聊天服务接入后可在此替换发送适配层。 */
 function choosePrompt(prompt: string) {
+  if (sending.value) return;
   draft.value = prompt;
   composer.value?.focus();
 }
-/** 未建立窗口时先通过 POST 创建独立/项目聊天，再保留草稿；消息发送接口仍待接入。 */
+/** 统一先以“新聊天”创建，首次提交调用后端生成名称并保存；消息发送接口仍待接入。 */
 async function send() {
   if (!draft.value.trim() || sending.value) return;
   sending.value = true;
+  const content = draft.value;
   try {
-    if (!currentChat.value || currentChat.value.source === "draft") {
-      const chat = await workspace.createChat(
+    let chat = currentChat.value;
+    const created = !chat || chat.source === "draft";
+    if (created)
+      chat = await workspace.createChat(
         currentProject.value?.id ?? null,
-        draft.value,
-        currentChat.value?.source === "draft"
-          ? currentChat.value.id
-          : undefined,
+        content,
+        chat?.source === "draft" ? chat.id : undefined,
       );
-      workspace.saveDraft(chat.id, draft.value, true);
+    if (!chat) return;
+    workspace.saveDraft(chat.id, content);
+    // 命名失败不丢弃已经创建的聊天，也不把失败变成重复创建；错误由窗口内状态单独显示。
+    try {
+      await workspace.generateFirstChatName(chat.id, content);
+    } catch {
+      /* 保留默认名、完整草稿和首次命名文本，用户可显式重试。 */
+    }
+    if (created) {
       await router.push({
         path: `/chat/${chat.id}`,
         query: {
@@ -80,12 +90,24 @@ async function send() {
           ...(chat.projectId ? { projectId: chat.projectId } : {}),
         },
       });
-      return;
-    }
-    workspace.saveDraft(currentChat.value.id, draft.value, true);
-    notice.value = "聊天服务暂未开放，你的草稿已保留在当前聊天窗口。";
+    } else notice.value = "聊天服务暂未开放，你的草稿已保留在当前聊天窗口。";
   } catch (cause) {
     notice.value = cause instanceof Error ? cause.message : "暂时无法保存草稿";
+  } finally {
+    sending.value = false;
+  }
+}
+const naming = computed(() =>
+  currentChat.value ? workspace.state.naming[currentChat.value.id] : undefined,
+);
+/** 重试仍由状态层使用第一次提交的文本，避免把后续输入当成首次内容生成名称。 */
+async function retryNaming() {
+  if (!currentChat.value || sending.value) return;
+  sending.value = true;
+  try {
+    await workspace.generateFirstChatName(currentChat.value.id, draft.value);
+  } catch {
+    /* 错误与默认名称保留在该聊天状态中，界面提供再次重试入口。 */
   } finally {
     sending.value = false;
   }
@@ -179,6 +201,21 @@ onBeforeUnmount(() => {
           </button>
         </div>
       </form>
+      <p v-if="naming?.loading" class="chat-hint" role="status">
+        正在生成聊天名称…
+      </p>
+      <div v-if="naming?.error" class="chat-notice" role="alert">
+        <MessageCircle :size="18" /><span
+          >名称生成失败：{{ naming.error }}。草稿已保留。</span
+        ><button
+          type="button"
+          class="text-button"
+          :disabled="sending"
+          @click="retryNaming"
+        >
+          重试命名
+        </button>
+      </div>
       <div v-if="notice" class="chat-notice" role="status">
         <MessageCircle :size="18" /><span>{{ notice }}</span
         ><button class="icon-button" aria-label="关闭提示" @click="notice = ''">
@@ -189,6 +226,7 @@ onBeforeUnmount(() => {
         <button
           v-for="suggestion in suggestions"
           :key="suggestion.title"
+          :disabled="sending"
           @click="choosePrompt(suggestion.prompt)"
         >
           <component :is="suggestion.icon" :size="19" /><strong>{{

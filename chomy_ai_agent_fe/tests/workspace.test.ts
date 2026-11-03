@@ -54,6 +54,7 @@ function fixture(allowed = (_code: string) => true) {
     moveChat: vi.fn().mockResolvedValue("已移动"),
     updateProject: vi.fn().mockResolvedValue("已修改"),
     deleteProject: vi.fn().mockResolvedValue("已删除"),
+    generateChatName: vi.fn().mockResolvedValue({ chatName: "后端生成名称" }),
     renameChat: vi.fn().mockResolvedValue("已重命名"),
     deleteChat: vi.fn().mockResolvedValue("已删除"),
   } satisfies WorkspaceApi;
@@ -234,7 +235,7 @@ describe("真实服务端写入与草稿", () => {
     const created = await store.createChat(null, "本机输入");
     expect(created.id).toBe("51");
     expect(created.source).toBe("remote");
-    expect(api.createChat).toHaveBeenCalledWith("本机输入", null);
+    expect(api.createChat).toHaveBeenCalledWith("新聊天", null);
     const restored = createWorkspaceStore(api, () => true, storage);
     restored.load("user-a");
     expect(restored.state.chats).toEqual([]);
@@ -343,5 +344,128 @@ describe("聊天创建、归档恢复及移动", () => {
     });
     expect(store.listProjectChats("21")).toEqual([]);
     expect(api.standalone).toHaveBeenCalledWith(1);
+  });
+});
+
+/** 首次命名流程必须经生成与重命名两个接口，不允许输入过程或后续发送反复覆盖名称。 */
+describe("默认名称与首次提交命名", () => {
+  async function namedFixture(allowed?: (code: string) => boolean) {
+    const f = fixture(allowed);
+    f.api.createChat.mockResolvedValue({ ...chat("51"), chatName: "新聊天" });
+    f.api.standalone.mockResolvedValue(
+      page([{ ...chat("51"), chatName: "新聊天" }]),
+    );
+    await f.store.createChat(null, "原始草稿");
+    return f;
+  }
+  it("创建固定新聊天，输入和保存草稿均不提前命名", async () => {
+    const { store, api } = await namedFixture();
+    store.saveDraft("51", "第一句话");
+    expect(api.createChat).toHaveBeenCalledWith("新聊天", null);
+    expect(store.state.chats[0]?.title).toBe("新聊天");
+    expect(api.generateChatName).not.toHaveBeenCalled();
+    expect(api.renameChat).not.toHaveBeenCalled();
+  });
+  it("首次提交生成并保存后续名称，后续发送跳过已完成任务", async () => {
+    const { store, api } = await namedFixture();
+    await store.generateFirstChatName("51", "第一次的内容");
+    await store.generateFirstChatName("51", "第二次的内容");
+    expect(api.generateChatName).toHaveBeenCalledExactlyOnceWith(
+      "第一次的内容",
+    );
+    expect(api.renameChat).toHaveBeenCalledExactlyOnceWith(
+      "51",
+      "后端生成名称",
+    );
+    expect(store.state.chats[0]?.title).toBe("后端生成名称");
+  });
+  it("即使生成结果仍为新聊天，刷新恢复后也不重复命名", async () => {
+    const { store, api, storage } = await namedFixture();
+    api.generateChatName.mockResolvedValue({ chatName: "新聊天" });
+    await store.generateFirstChatName("51", "首次内容");
+    const restored = createWorkspaceStore(api, () => true, storage);
+    restored.load("user-a");
+    await restored.loadStandalone();
+    await restored.generateFirstChatName("51", "刷新后的内容");
+    expect(api.generateChatName).toHaveBeenCalledOnce();
+  });
+  it("失败保留默认名及首次文本，重试仍使用首次文本；重命名失败也不假装保存成功", async () => {
+    const { store, api } = await namedFixture();
+    api.generateChatName.mockRejectedValueOnce(new Error("生成失败"));
+    await expect(store.generateFirstChatName("51", "首次内容")).rejects.toThrow(
+      "生成失败",
+    );
+    expect(store.state.chats[0]?.title).toBe("新聊天");
+    expect(store.state.naming["51"]?.error).toBe("生成失败");
+    api.renameChat.mockRejectedValueOnce(new Error("保存失败"));
+    await expect(store.generateFirstChatName("51", "后续内容")).rejects.toThrow(
+      "保存失败",
+    );
+    expect(store.state.chats[0]?.title).toBe("新聊天");
+    await store.generateFirstChatName("51", "更多内容");
+    expect(api.generateChatName.mock.calls.map((c) => c[0])).toEqual([
+      "首次内容",
+      "首次内容",
+      "首次内容",
+    ]);
+    expect(store.state.chats[0]?.title).toBe("后端生成名称");
+  });
+  it("同一聊天并发生成复用一个请求，手动改名优先于迟到生成结果", async () => {
+    const { store, api } = await namedFixture();
+    const pending = deferred<{ chatName: string }>();
+    api.generateChatName.mockReturnValueOnce(pending.promise);
+    const a = store.generateFirstChatName("51", "首次");
+    const b = store.generateFirstChatName("51", "后续");
+    await store.renameChat("51", "用户标题");
+    pending.resolve({ chatName: "迟到名称" });
+    await Promise.all([a, b]);
+    expect(api.generateChatName).toHaveBeenCalledOnce();
+    expect(api.renameChat).toHaveBeenCalledExactlyOnceWith("51", "用户标题");
+    expect(store.state.chats[0]?.title).toBe("用户标题");
+  });
+  it("生成写入已开始时，后发手动改名排队最后落库", async () => {
+    const { store, api } = await namedFixture();
+    const write = deferred<string>();
+    api.renameChat
+      .mockReturnValueOnce(write.promise)
+      .mockResolvedValueOnce("成功");
+    const auto = store.generateFirstChatName("51", "首次");
+    await vi.waitFor(() => expect(api.renameChat).toHaveBeenCalledOnce());
+    const manual = store.renameChat("51", "最后手动名");
+    write.resolve("成功");
+    await Promise.all([auto, manual]);
+    expect(api.renameChat.mock.calls.map((c) => c[1])).toEqual([
+      "后端生成名称",
+      "最后手动名",
+    ]);
+    expect(store.state.chats[0]?.title).toBe("最后手动名");
+  });
+  it("命名及保存分别鉴权，空或超长响应不能持久化，超过2000字仅截取命名输入", async () => {
+    const forbidden = await namedFixture(
+      (code) => code !== "agent:chat:generate-name",
+    );
+    await expect(
+      forbidden.store.generateFirstChatName("51", "首次"),
+    ).rejects.toThrow("权限");
+    expect(forbidden.api.generateChatName).not.toHaveBeenCalled();
+    const { store, api } = await namedFixture();
+    api.generateChatName.mockResolvedValueOnce({ chatName: "  " });
+    await expect(
+      store.generateFirstChatName("51", "字".repeat(1999) + "😀后续"),
+    ).rejects.toThrow("名称生成结果不正确");
+    expect(api.generateChatName.mock.calls[0]?.[0]).toBe("字".repeat(1999));
+    expect(api.renameChat).not.toHaveBeenCalled();
+  });
+  it("账户切换后迟到生成结果不能发起重命名或污染新账户", async () => {
+    const { store, api } = await namedFixture();
+    const result = deferred<{ chatName: string }>();
+    api.generateChatName.mockReturnValueOnce(result.promise);
+    const request = store.generateFirstChatName("51", "首次");
+    store.load("user-b");
+    result.resolve({ chatName: "旧账户名称" });
+    await expect(request).rejects.toThrow("账户已变化");
+    expect(api.renameChat).not.toHaveBeenCalled();
+    expect(store.state.chats).toEqual([]);
+    expect(store.state.naming).toEqual({});
   });
 });

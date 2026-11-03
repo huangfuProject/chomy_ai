@@ -20,8 +20,21 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/user/agent/chats")
 @RequiredArgsConstructor
 public class AgentChatController {
-    /** 对话创建、分页、归档恢复、移动、重命名与删除业务。 */
+    /** 对话名称生成、创建、分页、归档恢复、移动、重命名与删除业务。 */
     private final AgentChatService chatService;
+
+    /**
+     * 根据前端一句话生成聊天名称，当前提供占位结果，不修改聊天记录。
+     * @param jwt 已验签的认证主体
+     * @param request 命名文本，必填且最多 2000 个字符
+     * @return 包含聊天名称的结果，后续接入模型时保持结构不变
+     */
+    @PostMapping("/name/generate")
+    public AgentChatNameResponse generateName(@AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody GenerateAgentChatNameRequest request) {
+        // 当前用户来自 JWT，文本校验及占位命名由 Service 完成，Controller 不拼接名称。
+        return chatService.generateName(Long.valueOf(jwt.getSubject()), request);
+    }
 
     /**
      * 创建本人聊天，项目可空，初始归档状态由服务端固定。

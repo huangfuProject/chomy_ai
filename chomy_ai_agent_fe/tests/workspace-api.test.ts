@@ -76,6 +76,13 @@ describe("项目与聊天 HTTP 合约", () => {
       ],
     ]);
   });
+  it("名称生成只发送 message，不把预览结果误当成已重命名", async () => {
+    await workspaceApi.generateChatName("第一次提交的内容");
+    expect(request).toHaveBeenCalledExactlyOnceWith(
+      "/user/agent/chats/name/generate",
+      { method: "POST", body: JSON.stringify({ message: "第一次提交的内容" }) },
+    );
+  });
   it("草稿 UUID 和无效页码在请求发出前拒绝", () => {
     expect(() => workspaceApi.deleteChat("draft-local")).toThrow();
     expect(() => workspaceApi.projects(0)).toThrow();

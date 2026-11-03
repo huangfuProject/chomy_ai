@@ -35,6 +35,10 @@ interface Preferences {
   pinned: string[];
   drafts: Record<string, string>;
   unsent: WorkspaceChat[];
+  /** 首次提交命名成功后保存标记，即使结果仍为“新聊天”，刷新后也不重复生成。 */
+  namedChatIds: string[];
+  /** 失败重试仍使用第一次提交的文本；成功或手动改名后立即清除。 */
+  nameInputs: Record<string, string>;
 }
 
 /**
@@ -57,6 +61,7 @@ export function createWorkspaceStore(
     standalonePage: emptyPage(),
     archivedPage: emptyPage(),
     projectPages: {} as Record<string, WorkspacePage>,
+    naming: {} as Record<string, { loading: boolean; error: string }>,
   });
   let epoch = 0;
   let preferences: Preferences = {
@@ -64,7 +69,12 @@ export function createWorkspaceStore(
     pinned: [],
     drafts: {},
     unsent: [],
+    namedChatIds: [],
+    nameInputs: {},
   };
+  const renameRevisions = new Map<string, number>();
+  const renameQueues = new Map<string, Promise<boolean>>();
+  const nameRequests = new Map<string, Promise<void>>();
   function can(code: string) {
     return !!state.userId && allowed(code);
   }
@@ -106,12 +116,18 @@ export function createWorkspaceStore(
       standalonePage: emptyPage(),
       archivedPage: emptyPage(),
       projectPages: {},
+      naming: {},
     });
+    renameRevisions.clear();
+    renameQueues.clear();
+    nameRequests.clear();
     preferences = {
       sidebarCollapsed: false,
       pinned: [],
       drafts: {},
       unsent: [],
+      namedChatIds: [],
+      nameInputs: {},
     };
     if (!userId) return;
     try {
@@ -138,6 +154,22 @@ export function createWorkspaceStore(
             text.length <= 20_000,
         ),
       );
+      preferences.namedChatIds = Array.isArray(saved.namedChatIds)
+        ? saved.namedChatIds.filter(
+            (id) => typeof id === "string" && /^[1-9]\d*$/.test(id),
+          )
+        : [];
+      preferences.nameInputs =
+        saved.nameInputs && typeof saved.nameInputs === "object"
+          ? Object.fromEntries(
+              Object.entries(saved.nameInputs).filter(
+                ([id, text]) =>
+                  /^[1-9]\d*$/.test(id) &&
+                  typeof text === "string" &&
+                  text.length <= 2000,
+              ),
+            )
+          : {};
       state.sidebarCollapsed = saved.sidebarCollapsed;
       state.chats = saved.unsent.filter(
         (c) =>
@@ -403,10 +435,8 @@ export function createWorkspaceStore(
     if (projectId !== null && !state.projects.some((p) => p.id === projectId))
       throw new Error("项目不存在");
     if (draft.length > 20_000) throw new Error("草稿不能超过 20000 个字符");
-    const result = await api.createChat(
-      draft.trim().replace(/\s+/g, " ").slice(0, 24) || "新聊天",
-      projectId,
-    );
+    // 创建阶段统一使用固定默认名，不能从输入内容在前端截取或推断标题。
+    const result = await api.createChat("新聊天", projectId);
     assertOwner(version);
     invalidateReads();
     const chat = mapChat(result);
@@ -476,36 +506,128 @@ export function createWorkspaceStore(
     ]);
     assertOwner(version);
   }
-  function saveDraft(id: string, draft: string, submitted = false) {
+  function saveDraft(id: string, draft: string) {
     const chat = state.chats.find((c) => c.id === id);
     if (!chat) return;
     if (draft.length > 20_000) throw new Error("草稿不能超过 20000 个字符");
     chat.draft = draft;
-    if (
-      chat.source === "draft" &&
-      submitted &&
-      draft.trim() &&
-      chat.title === "新聊天"
-    )
-      chat.title = draft.trim().replace(/\s+/g, " ").slice(0, 24);
+    // 输入与保存草稿都不改变名称；首次提交的命名统一交给后端生成接口。
     if (chat.source === "remote") preferences.drafts[id] = draft;
     persist();
   }
-  async function renameChat(id: string, name: string) {
+  /** 手动重命名与自动命名共用串行写入队列，确保后发的手动修改不会被生成结果覆盖。 */
+  async function renameChat(
+    id: string,
+    name: string,
+    generated = false,
+    expectedRevision = 0,
+  ): Promise<boolean> {
     const chat = state.chats.find((c) => c.id === id);
     if (!chat) throw new Error("聊天不存在");
     if (!name.trim() || name.length > 128)
       throw new Error("聊天名称需为 1 至 128 个字符");
     const version = owner();
-    if (chat.source === "remote") {
-      requirePermission("agent:chat:rename");
-      await api.renameChat(id, name.trim());
-      assertOwner(version);
+    if (chat.source === "remote") requirePermission("agent:chat:rename");
+    if (!generated) renameRevisions.set(id, (renameRevisions.get(id) ?? 0) + 1);
+    const previous = renameQueues.get(id) ?? Promise.resolve(true);
+    const operation = previous
+      .catch(() => false)
+      .then(async () => {
+        assertOwner(version);
+        const current = state.chats.find((c) => c.id === id);
+        if (!current) throw new Error("聊天不存在");
+        // 用户在生成过程中已手动改名，或后端列表已返回新名称时，不再覆盖。
+        if (
+          generated &&
+          ((renameRevisions.get(id) ?? 0) !== expectedRevision ||
+            current.title !== "新聊天")
+        )
+          return false;
+        if (current.source === "remote") {
+          await api.renameChat(id, name.trim());
+          assertOwner(version);
+        }
+        invalidateReads();
+        const latest = state.chats.find((c) => c.id === id);
+        if (latest) latest.title = name.trim();
+        if (current.source === "remote")
+          preferences.namedChatIds = [
+            ...new Set([...preferences.namedChatIds, id]),
+          ];
+        delete preferences.nameInputs[id];
+        if (state.naming[id]) state.naming[id].error = "";
+        persist();
+        return true;
+      });
+    renameQueues.set(id, operation);
+    try {
+      return await operation;
+    } finally {
+      if (renameQueues.get(id) === operation) renameQueues.delete(id);
     }
-    invalidateReads();
-    const current = state.chats.find((c) => c.id === id);
-    if (current) current.title = name.trim();
+  }
+  /**
+   * 首次提交才生成标题；名称接口只返回预览，必须再调用独立重命名接口保存。
+   * 并发点击复用同一个任务，失败保留原名和首次文本，成功后持久化一次性标记。
+   */
+  async function generateFirstChatName(
+    id: string,
+    message: string,
+  ): Promise<void> {
+    const version = owner(),
+      chat = state.chats.find((c) => c.id === id);
+    if (!chat || chat.source !== "remote") throw new Error("聊天尚未创建");
+    if (preferences.namedChatIds.includes(id) || chat.title !== "新聊天") {
+      if (state.naming[id]) state.naming[id].error = "";
+      return;
+    }
+    const pending = nameRequests.get(id);
+    if (pending) return pending;
+    // 接口最多接受 2000 个 UTF-16 字符，仅命名取前段文本，完整草稿仍原样保留。
+    // 边界若截到 emoji 的高代理项则移除该半字符，避免传入不完整 Unicode。
+    const text =
+      preferences.nameInputs[id] ||
+      message
+        .trim()
+        .slice(0, 2000)
+        .replace(/[\uD800-\uDBFF]$/, "");
+    if (!text.trim()) throw new Error("命名文本不能为空");
+    preferences.nameInputs[id] = text;
     persist();
+    const revision = renameRevisions.get(id) ?? 0;
+    state.naming[id] = { loading: true, error: "" };
+    const operation: Promise<void> = (async () => {
+      requirePermission("agent:chat:generate-name");
+      requirePermission("agent:chat:rename");
+      const result = await api.generateChatName(text);
+      assertOwner(version);
+      if (
+        !result ||
+        typeof result.chatName !== "string" ||
+        !result.chatName.trim() ||
+        result.chatName.length > 128
+      )
+        throw new Error("名称生成结果不正确");
+      await renameChat(id, result.chatName, true, revision);
+    })()
+      .catch((cause) => {
+        if (
+          version === epoch &&
+          state.naming[id] &&
+          !preferences.namedChatIds.includes(id) &&
+          state.chats.some((c) => c.id === id)
+        )
+          state.naming[id].error =
+            cause instanceof Error ? cause.message : "名称生成失败，请重试";
+        throw cause;
+      })
+      .finally(() => {
+        if (version === epoch && state.naming[id])
+          state.naming[id].loading = false;
+        if (nameRequests.get(id) === operation) nameRequests.delete(id);
+      });
+    nameRequests.set(id, operation);
+    return operation;
   }
   async function updateProject(id: string, name: string, description?: string) {
     requirePermission("agent:project:update");
@@ -541,6 +663,11 @@ export function createWorkspaceStore(
     invalidateReads();
     state.chats = state.chats.filter((c) => c.id !== id);
     delete preferences.drafts[id];
+    delete preferences.nameInputs[id];
+    delete state.naming[id];
+    preferences.namedChatIds = preferences.namedChatIds.filter(
+      (value) => value !== id,
+    );
     persist();
     if (chat.source === "remote") {
       await Promise.all([
@@ -559,8 +686,16 @@ export function createWorkspaceStore(
     const reloadArchives =
       state.archivedPage.initialized || state.archivedPage.loading;
     invalidateReads();
-    for (const chat of state.chats)
-      if (chat.projectId === id) delete preferences.drafts[chat.id];
+    for (const chat of state.chats) {
+      if (chat.projectId === id) {
+        delete preferences.drafts[chat.id];
+        delete preferences.nameInputs[chat.id];
+        delete state.naming[chat.id];
+        preferences.namedChatIds = preferences.namedChatIds.filter(
+          (value) => value !== chat.id,
+        );
+      }
+    }
     state.projects = state.projects.filter((p) => p.id !== id);
     state.chats = state.chats.filter((c) => c.projectId !== id);
     delete state.projectPages[id];
@@ -605,6 +740,7 @@ export function createWorkspaceStore(
     moveChat,
     saveDraft,
     renameChat,
+    generateFirstChatName,
     updateProject,
     deleteChat,
     deleteProject,

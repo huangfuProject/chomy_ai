@@ -24,6 +24,8 @@ public enum AgentPermission {
     STANDALONE_CHATS("agent:chat:standalone"),
     /** 分页查看本人全部归档对话。 */
     ARCHIVED_CHATS("agent:chat:archived"),
+    /** 根据一句话生成聊天名称预览。 */
+    CHAT_GENERATE_NAME("agent:chat:generate-name"),
     /** 创建本人聊天，项目归属由表单中的项目 ID 确定。 */
     CHAT_CREATE("agent:chat:create"),
     /** 归档本人聊天。 */

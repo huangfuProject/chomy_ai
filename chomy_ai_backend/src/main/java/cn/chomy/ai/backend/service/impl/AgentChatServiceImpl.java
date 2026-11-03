@@ -34,6 +34,30 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
     private final AgentProjectMapper projectMapper;
 
     /**
+     * 以纯文本规则提供命名占位结果，后续模型调用逻辑集中替换此处，不改变接口协议。
+     * @param userId 当前认证用户 ID，必须为正数
+     * @param request 必填命名文本，最多 2000 个字符
+     * @return 合并空白后最多 20 个 Unicode 码点的名称，不写入数据库
+     * @throws BizException 用户身份、表单或文本不合法时抛出
+     */
+    @Override
+    public AgentChatNameResponse generateName(Long userId, GenerateAgentChatNameRequest request) {
+        requireId(userId, "用户不合法");
+        // 服务层保留边界校验，避免内部调用绕过 MVC 的表单约束。
+        if (request == null || request.message() == null || request.message().isBlank()) {
+            throw new BizException("命名文本不能为空");
+        }
+        if (request.message().length() > 2000) { throw new BizException("命名文本不能超过2000个字符"); }
+        // 占位规则：把换行、制表符及 Unicode 空白合并为空格，生成适合单行展示的名称。
+        String text = request.message().replaceAll("(?U)\\s+", " ").strip();
+        if (text.isEmpty()) { throw new BizException("命名文本不能为空"); }
+        // 按 Unicode 码点截断，避免在 emoji 等补充字符的代理对中间切断；不调用模型或存储层。
+        int length = Math.min(20, text.codePointCount(0, text.length()));
+        String chatName = text.substring(0, text.offsetByCodePoints(0, length)).stripTrailing();
+        return new AgentChatNameResponse(chatName);
+    }
+
+    /**
      * 对外创建入口，表单仅接收名称及项目 ID，派生字段和状态由服务端确定。
      * @param userId 当前认证用户 ID
      * @param request 名称及可空项目 ID

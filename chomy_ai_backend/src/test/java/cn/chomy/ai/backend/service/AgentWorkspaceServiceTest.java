@@ -50,6 +50,32 @@ class AgentWorkspaceServiceTest {
         chatService = new AgentChatServiceImpl(chats, projects);
     }
 
+    /** 占位命名可处理多行文本及 emoji，返回短名称且不访问持久化层。 */
+    @Test
+    void generatesPreviewNameWithoutPersisting() {
+        assertThat(chatService.generateName(1L, new GenerateAgentChatNameRequest("  帮我\n  学习\tJava  ")).chatName())
+                .isEqualTo("帮我 学习 Java");
+        String emojiName = chatService.generateName(1L, new GenerateAgentChatNameRequest("😀".repeat(21))).chatName();
+        assertThat(emojiName).isEqualTo("😀".repeat(20));
+        verifyNoInteractions(projects, chats);
+    }
+
+    /** 命名入口的服务层拒绝空、纯空白、超长文本及非法身份，不能绕过 HTTP 校验。 */
+    @Test
+    void rejectsInvalidNameGenerationInput() {
+        assertThatThrownBy(() -> chatService.generateName(0L, new GenerateAgentChatNameRequest("命名文本")))
+                .hasMessage("用户不合法");
+        assertThatThrownBy(() -> chatService.generateName(1L, null)).hasMessage("命名文本不能为空");
+        for (String message : new String[]{null, "", " \n\t", "\u00a0"}) {
+            assertThatThrownBy(() -> chatService.generateName(1L, new GenerateAgentChatNameRequest(message)))
+                    .hasMessage("命名文本不能为空");
+        }
+        assertThatThrownBy(() -> chatService.generateName(1L, new GenerateAgentChatNameRequest("字".repeat(2001))))
+                .hasMessage("命名文本不能超过2000个字符");
+        assertThat(chatService.generateName(1L, new GenerateAgentChatNameRequest("字".repeat(2000))).chatName()).hasSize(20);
+        verifyNoInteractions(projects, chats);
+    }
+
     /** 项目分页必须限制当前用户，保留分页元数据，并在创建时间相同时按 ID 稳定倒序。 */
     @Test
     void projectPaginationIsOwnedAndOrdered() {
