@@ -8,11 +8,10 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
-import cn.chomy.ai.backend.security.UserContext;
 import org.springframework.web.bind.annotation.*;
 
 /**
- * 当前用户项目入口，仅接收参数并委托服务；用户身份固定来自由安全链验证的用户上下文。
+ * 当前用户项目入口，仅接收参数并委托服务；用户身份由服务层从安全链验证的用户上下文取得。
  * 项目与对话通过 ID 关联，名称允许重复；独立接口权限由请求级及服务级 RBAC 校验。
  * @author chomy
  */
@@ -33,8 +32,8 @@ public class AgentProjectController {
      */
     @GetMapping
     public IPage<AgentProject> page(@Valid @ModelAttribute AgentPageQuery query) {
-        // 用户身份固定来自认证用户上下文；所有权过滤、分页边界检查和排序由服务层统一处理。
-        return projectService.pageProjects(UserContext.userId(), query);
+        // 用户身份由服务层从认证上下文取得；所有权过滤、分页边界检查和排序由服务层统一处理。
+        return projectService.pageProjects(query);
     }
 
     /**
@@ -45,7 +44,7 @@ public class AgentProjectController {
     @PostMapping
     public AgentProject create(@Valid @RequestBody CreateAgentProjectRequest request) {
         // 所有者由服务端获取，不接受客户端指定的 userId。
-        return projectService.createProject(UserContext.userId(), request);
+        return projectService.createProject(request);
     }
 
     /**
@@ -58,7 +57,7 @@ public class AgentProjectController {
     public IPage<AgentChatView> chats(
             @PathVariable @Positive(message = "项目ID必须大于零") Long projectId, @Valid @ModelAttribute AgentPageQuery query) {
         // 项目所有权检查和排序统一交给业务服务。
-        return chatService.projectChats(UserContext.userId(), projectId, query);
+        return chatService.projectChats(projectId, query);
     }
 
     /**
@@ -71,8 +70,8 @@ public class AgentProjectController {
     public String update(
             @PathVariable @Positive(message = "项目ID必须大于零") Long projectId,
             @Valid @RequestBody UpdateAgentProjectRequest request) {
-        // 仅透传白名单表单，用户身份由认证用户上下文确定；服务层统一校验所有权并更新。
-        return projectService.updateProject(UserContext.userId(), projectId, request);
+        // 仅透传白名单表单，用户身份由服务层从认证上下文确定；服务层统一校验所有权并更新。
+        return projectService.updateProject(projectId, request);
     }
 
     /**
@@ -84,6 +83,6 @@ public class AgentProjectController {
     public String delete(
             @PathVariable @Positive(message = "项目ID必须大于零") Long projectId) {
         // 多表清理由 Service 事务保证，Controller 不直接操作 Mapper。
-        return projectService.deleteProject(UserContext.userId(), projectId);
+        return projectService.deleteProject(projectId);
     }
 }

@@ -6,7 +6,6 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
-import cn.chomy.ai.backend.security.UserContext;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -28,8 +27,8 @@ public class UserController {
      */
     @PostMapping
     public AdminUserView create(@Valid @RequestBody AdminCreateUserRequest request) {
-        // 创建人从认证用户上下文提取，不允许表单指定；其余流程全部委托 Service。
-        return adminUserService.create(UserContext.userId(), request);
+        // 创建人由服务层从认证上下文提取，不允许表单指定；其余流程全部委托 Service。
+        return adminUserService.create(request);
     }
 
     /**
@@ -48,8 +47,8 @@ public class UserController {
      */
     @PutMapping("/{id}/freeze")
     public AdminUserView freeze(@PathVariable @Positive(message = "用户ID必须为正数") Long id) {
-        // 操作者仅来自认证用户上下文，由业务层判断是否为自己并撤销旧会话。
-        return adminUserService.freeze(UserContext.userId(), id);
+        // 操作者由服务层从认证上下文取得，由业务层判断是否为自己并撤销旧会话。
+        return adminUserService.freeze(id);
     }
 
     /**
@@ -103,7 +102,7 @@ public class UserController {
     @DeleteMapping("/{id}")
     public String delete(@PathVariable @Positive(message = "用户ID必须为正数") Long id) {
         // 删除及关系清理在同一业务事务中完成，删除也要求 update 组权限。
-        return adminUserService.delete(UserContext.userId(), id);
+        return adminUserService.delete(id);
     }
 
     /**

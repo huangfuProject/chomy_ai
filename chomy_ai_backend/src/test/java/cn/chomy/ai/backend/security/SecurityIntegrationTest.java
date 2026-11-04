@@ -347,14 +347,14 @@ class SecurityIntegrationTest {
     @Test
     void adminEndpointsMatchPermissionSeedAndDelegate() throws Exception {
         grantAdminPermissions(UserManagementPermission.values());
-        when(store.adminUsers.create(anyLong(), any(AdminCreateUserRequest.class))).thenReturn(AdminUserView.from(store.user));
+        when(store.adminUsers.create(any(AdminCreateUserRequest.class))).thenReturn(AdminUserView.from(store.user));
         when(store.adminUsers.detail(anyLong())).thenReturn(AdminUserView.from(store.user));
         when(store.adminUsers.page(any(AdminUserQuery.class))).thenReturn(new Page<AdminUserView>(1, 20));
         String token = login();
         mvc.perform(post("/admin/users").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"username\":\"bob\",\"nickname\":\"新用户\",\"phone\":\"13800000002\",\"password\":\"InitialPass123!\",\"createdBy\":999,\"createType\":1}"))
                 .andExpect(status().isOk());
-        verify(store.adminUsers).create(eq(1L), any(AdminCreateUserRequest.class));
+        verify(store.adminUsers).create(any(AdminCreateUserRequest.class));
         for (String action : List.of("activate", "freeze", "unfreeze")) {
             mvc.perform(put("/admin/users/2/" + action).header("Authorization", "Bearer " + token)).andExpect(status().isOk());
         }
@@ -374,8 +374,8 @@ class SecurityIntegrationTest {
         assertThat(query.getValue().getActived()).isEqualTo(ActivationStatus.INACTIVE);
         assertThat(query.getValue().getGender()).isEqualTo(Gender.FEMALE);
         assertThat(query.getValue().getCurrent()).isEqualTo(2);
-        verify(store.adminUsers).freeze(1L, 2L);
-        verify(store.adminUsers).delete(1L, 2L);
+        verify(store.adminUsers).freeze(2L);
+        verify(store.adminUsers).delete(2L);
     }
 
     /** 只读接口权限不能执行创建或删除，共用操作权限也不能越权到其他接口。 */
@@ -389,8 +389,8 @@ class SecurityIntegrationTest {
                 .content("{\"username\":\"bob\",\"nickname\":\"昵称\",\"phone\":\"13800000002\",\"password\":\"InitialPass123!\"}"))
                 .andExpect(status().isForbidden());
         mvc.perform(delete("/admin/users/2").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
-        verify(store.adminUsers, never()).create(anyLong(), any());
-        verify(store.adminUsers, never()).delete(anyLong(), anyLong());
+        verify(store.adminUsers, never()).create(any());
+        verify(store.adminUsers, never()).delete(anyLong());
     }
 
     /** 即使绕过 HTTP 请求级匹配，用户管理 Service 自身仍要求独立操作权限。 */
@@ -401,7 +401,7 @@ class SecurityIntegrationTest {
         var authentication = context.getBean(JwtSessionService.class).authenticate(context.getBean(JwtDecoder.class).decode(token));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AdminUserService.class).delete(1L, 2L))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AdminUserService.class).delete(2L))
                     .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
     }
@@ -450,7 +450,7 @@ class SecurityIntegrationTest {
         mvc.perform(post("/admin/users").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"username\":\"bob\",\"nickname\":\"昵称\",\"phone\":\"13800000002\",\"password\":\"InitialPass123!\"}"))
                 .andExpect(status().isOk());
-        verify(store.adminUsers).create(eq(1L), any(AdminCreateUserRequest.class));
+        verify(store.adminUsers).create(any(AdminCreateUserRequest.class));
         // 合并只发生在同一个操作内，拥有创建权限不能借此修改用户密码。
         mvc.perform(put("/admin/users/2/password").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"newPassword\":\"ChangedPass123!\"}")).andExpect(status().isForbidden());
@@ -458,34 +458,38 @@ class SecurityIntegrationTest {
 
     /** 九个项目及对话接口必须与真实 SQL 权限一一对应，用户 ID 来自 JWT 而非表单。 */
     @Test
-    void agentEndpointsMatchSeedAndUseJwtOwner() throws Exception {
+    void agentEndpointsMatchSeedAndDelegateBusinessArguments() throws Exception {
         grantAgentPermissions(AgentPermission.values());
-        when(store.agentProjects.pageProjects(anyLong(), any())).thenReturn(new Page<>());
-        when(store.agentChats.projectChats(anyLong(), anyLong(), any())).thenReturn(new Page<>());
-        when(store.agentChats.standaloneChats(anyLong(), any())).thenReturn(new Page<>());
-        when(store.agentChats.archivedChats(anyLong(), any())).thenReturn(new Page<>());
-        when(store.agentChats.deleteChat(anyLong(), anyLong())).thenReturn("对话已删除");
-        when(store.agentProjects.deleteProject(anyLong(), anyLong())).thenReturn("项目及其全部对话已删除");
+        when(store.agentProjects.pageProjects(any())).thenReturn(new Page<>());
+        when(store.agentChats.projectChats(anyLong(), any())).thenReturn(new Page<>());
+        when(store.agentChats.standaloneChats(any())).thenReturn(new Page<>());
+        when(store.agentChats.archivedChats(any())).thenReturn(new Page<>());
+        when(store.agentChats.deleteChat(anyLong())).thenReturn("对话已删除");
+        when(store.agentProjects.deleteProject(anyLong())).thenReturn("项目及其全部对话已删除");
         String token = login();
-        // 故意附带其他用户 ID，Controller 仍必须将认证用户 1 传给 Service。
+        // 故意附带其他用户 ID，Controller 只委托表单；Service 执行时仍能读取真实用户 1。
+        doAnswer(call -> {
+            assertThat(UserContext.userId()).isEqualTo(1L);
+            return null;
+        }).when(store.agentProjects).createProject(any(CreateAgentProjectRequest.class));
         mvc.perform(post("/user/agent/projects").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"projectName\":\"项目\",\"userId\":999}"))
                 .andExpect(status().isOk());
-        verify(store.agentProjects).createProject(eq(1L), any(CreateAgentProjectRequest.class));
-        // 查询串中的伪造 userId 不得覆盖 JWT 身份；合法页码应完整传递给 Service。
+        verify(store.agentProjects).createProject(any(CreateAgentProjectRequest.class));
+        // 查询串中的伪造 userId 不作为业务参数传递；合法页码应完整委托给 Service。
         mvc.perform(get("/user/agent/projects?userId=999&current=2&size=10").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.records").isArray());
-        verify(store.agentProjects).pageProjects(eq(1L), argThat(query -> query.getCurrent() == 2L && query.getSize() == 10L));
+        verify(store.agentProjects).pageProjects(argThat(query -> query.getCurrent() == 2L && query.getSize() == 10L));
         mvc.perform(get("/user/agent/projects/10/chats").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
-        verify(store.agentChats).projectChats(eq(1L), eq(10L), any(AgentPageQuery.class));
+        verify(store.agentChats).projectChats(eq(10L), any(AgentPageQuery.class));
         mvc.perform(get("/user/agent/chats/standalone").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
-        verify(store.agentChats).standaloneChats(eq(1L), any(AgentPageQuery.class));
+        verify(store.agentChats).standaloneChats(any(AgentPageQuery.class));
         mvc.perform(get("/user/agent/chats/archived").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
-        verify(store.agentChats).archivedChats(eq(1L), any(AgentPageQuery.class));
+        verify(store.agentChats).archivedChats(any(AgentPageQuery.class));
         mvc.perform(delete("/user/agent/chats/100").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
-        verify(store.agentChats).deleteChat(1L, 100L);
+        verify(store.agentChats).deleteChat(100L);
         mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
-        verify(store.agentProjects).deleteProject(1L, 10L);
+        verify(store.agentProjects).deleteProject(10L);
     }
 
     /** 未登录返回 401，已登录但未授权返回 403，拥有查询权限也不能删除数据。 */
@@ -505,7 +509,7 @@ class SecurityIntegrationTest {
         var authentication = context.getBean(JwtSessionService.class).authenticate(context.getBean(JwtDecoder.class).decode(token));
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class).deleteChat(1L, 100L))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class).deleteChat(100L))
                     .isInstanceOf(AccessDeniedException.class);
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
     }
@@ -518,34 +522,34 @@ class SecurityIntegrationTest {
         mvc.perform(get("/user/agent/projects").header("Authorization", "Bearer " + createToken))
                 .andExpect(status().isForbidden());
         grantAgentPermissions(AgentPermission.PROJECT_PAGE);
-        when(store.agentProjects.pageProjects(anyLong(), any())).thenReturn(new Page<>());
+        when(store.agentProjects.pageProjects(any())).thenReturn(new Page<>());
         String pageToken = login();
         mvc.perform(get("/user/agent/projects").header("Authorization", "Bearer " + pageToken)).andExpect(status().isOk());
         mvc.perform(delete("/user/agent/projects/10").header("Authorization", "Bearer " + pageToken))
                 .andExpect(status().isForbidden());
-        verify(store.agentProjects, never()).deleteProject(anyLong(), anyLong());
+        verify(store.agentProjects, never()).deleteProject(anyLong());
     }
 
     /** 修改权限使用真实 SQL 路由，认证用户不能被表单中的伪造所有者替换。 */
     @Test
     void updateEndpointsUseJwtOwnerAndIndependentPermissions() throws Exception {
         grantAgentPermissions(AgentPermission.PROJECT_UPDATE);
-        when(store.agentProjects.updateProject(anyLong(), anyLong(), any())).thenReturn("项目已修改");
+        when(store.agentProjects.updateProject(anyLong(), any())).thenReturn("项目已修改");
         String projectToken = login();
         mvc.perform(put("/user/agent/projects/10").header("Authorization", "Bearer " + projectToken)
                 .contentType("application/json").content("{\"projectName\":\"新名称\",\"description\":null,\"userId\":999}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data").value("项目已修改"));
-        verify(store.agentProjects).updateProject(eq(1L), eq(10L), eq(new UpdateAgentProjectRequest("新名称", null)));
+        verify(store.agentProjects).updateProject(eq(10L), eq(new UpdateAgentProjectRequest("新名称", null)));
         mvc.perform(put("/user/agent/chats/100/name").header("Authorization", "Bearer " + projectToken)
                 .contentType("application/json").content("{\"chatName\":\"新对话\"}"))
                 .andExpect(status().isForbidden());
         grantAgentPermissions(AgentPermission.CHAT_RENAME);
-        when(store.agentChats.renameChat(anyLong(), anyLong(), any())).thenReturn("对话已重命名");
+        when(store.agentChats.renameChat(anyLong(), any())).thenReturn("对话已重命名");
         String chatToken = login();
         mvc.perform(put("/user/agent/chats/100/name").header("Authorization", "Bearer " + chatToken)
                 .contentType("application/json").content("{\"chatName\":\"新对话\",\"userId\":999,\"projectId\":999,\"archived\":0}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data").value("对话已重命名"));
-        verify(store.agentChats).renameChat(eq(1L), eq(100L), eq(new RenameAgentChatRequest("新对话")));
+        verify(store.agentChats).renameChat(eq(100L), eq(new RenameAgentChatRequest("新对话")));
         mvc.perform(put("/user/agent/projects/10").header("Authorization", "Bearer " + chatToken)
                 .contentType("application/json").content("{\"projectName\":\"新名称\"}"))
                 .andExpect(status().isForbidden());
@@ -569,9 +573,9 @@ class SecurityIntegrationTest {
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentProjectService.class)
-                    .updateProject(1L, 10L, new UpdateAgentProjectRequest("名称", null))).isInstanceOf(AccessDeniedException.class);
+                    .updateProject(10L, new UpdateAgentProjectRequest("名称", null))).isInstanceOf(AccessDeniedException.class);
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class)
-                    .renameChat(1L, 100L, new RenameAgentChatRequest("名称"))).isInstanceOf(AccessDeniedException.class);
+                    .renameChat(100L, new RenameAgentChatRequest("名称"))).isInstanceOf(AccessDeniedException.class);
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
         grantAgentPermissions(AgentPermission.PROJECT_UPDATE, AgentPermission.CHAT_RENAME);
         String token = login();
@@ -601,41 +605,41 @@ class SecurityIntegrationTest {
         AgentChat created = new AgentChat(); created.setId(100L); created.setUserId(1L);
         created.setChatName("新聊天"); created.setType(AgentChatType.STANDALONE);
         created.setArchived(AgentChatArchiveStatus.UNARCHIVED);
-        when(store.agentChats.createChat(anyLong(), any(CreateAgentChatRequest.class))).thenReturn(created);
-        when(store.agentChats.archiveChat(anyLong(), anyLong())).thenReturn("对话已归档");
-        when(store.agentChats.restoreChat(anyLong(), anyLong())).thenReturn("对话已恢复");
-        when(store.agentChats.moveChat(anyLong(), anyLong(), any())).thenReturn("对话已移动");
+        when(store.agentChats.createChat(any(CreateAgentChatRequest.class))).thenReturn(created);
+        when(store.agentChats.archiveChat(anyLong())).thenReturn("对话已归档");
+        when(store.agentChats.restoreChat(anyLong())).thenReturn("对话已恢复");
+        when(store.agentChats.moveChat(anyLong(), any())).thenReturn("对话已移动");
         String token = login();
         mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"chatName\":\"新聊天\",\"userId\":999,\"type\":1,\"archived\":1}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value("100"))
                 .andExpect(jsonPath("$.data.archived").value(0));
-        verify(store.agentChats).createChat(eq(1L), eq(new CreateAgentChatRequest("新聊天", null)));
+        verify(store.agentChats).createChat(eq(new CreateAgentChatRequest("新聊天", null)));
         mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"chatName\":\"项目聊天\",\"projectId\":10}"))
                 .andExpect(status().isOk());
-        verify(store.agentChats).createChat(eq(1L), eq(new CreateAgentChatRequest("项目聊天", 10L)));
+        verify(store.agentChats).createChat(eq(new CreateAgentChatRequest("项目聊天", 10L)));
         for (String action : List.of("archive", "restore")) {
             mvc.perform(put("/user/agent/chats/100/" + action).header("Authorization", "Bearer " + token))
                     .andExpect(status().isOk());
         }
-        verify(store.agentChats).archiveChat(1L, 100L); verify(store.agentChats).restoreChat(1L, 100L);
+        verify(store.agentChats).archiveChat(100L); verify(store.agentChats).restoreChat(100L);
         mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"projectId\":20,\"userId\":999,\"archived\":0}"))
                 .andExpect(status().isOk());
-        verify(store.agentChats).moveChat(eq(1L), eq(100L), eq(new MoveAgentChatRequest(20L)));
+        verify(store.agentChats).moveChat(eq(100L), eq(new MoveAgentChatRequest(20L)));
         mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"projectId\":null}" )).andExpect(status().isOk());
-        verify(store.agentChats).moveChat(eq(1L), eq(100L), eq(new MoveAgentChatRequest(null)));
+        verify(store.agentChats).moveChat(eq(100L), eq(new MoveAgentChatRequest(null)));
         // 前端用十进制字符串传递雪花 ID，Jackson 绑定 Long 时必须保留超出 JS 安全整数范围的精度。
         mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"chatName\":\"大整数项目聊天\",\"projectId\":\"970000000000001041\"}"))
                 .andExpect(status().isOk());
-        verify(store.agentChats).createChat(eq(1L), eq(new CreateAgentChatRequest("大整数项目聊天", 970000000000001041L)));
+        verify(store.agentChats).createChat(eq(new CreateAgentChatRequest("大整数项目聊天", 970000000000001041L)));
         mvc.perform(put("/user/agent/chats/100/move").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"projectId\":\"970000000000001041\"}"))
                 .andExpect(status().isOk());
-        verify(store.agentChats).moveChat(eq(1L), eq(100L), eq(new MoveAgentChatRequest(970000000000001041L)));
+        verify(store.agentChats).moveChat(eq(100L), eq(new MoveAgentChatRequest(970000000000001041L)));
     }
 
     /** 创建、归档、恢复、移动各自独立授权，归档权限不能授予恢复或移动。 */
@@ -648,7 +652,7 @@ class SecurityIntegrationTest {
                     .andExpect(status().isUnauthorized());
         }
         grantAgentPermissions(AgentPermission.CHAT_ARCHIVE);
-        when(store.agentChats.archiveChat(anyLong(), anyLong())).thenReturn("对话已归档");
+        when(store.agentChats.archiveChat(anyLong())).thenReturn("对话已归档");
         String token = login();
         mvc.perform(put("/user/agent/chats/100/archive").header("Authorization", "Bearer " + token)).andExpect(status().isOk());
         mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
@@ -662,15 +666,15 @@ class SecurityIntegrationTest {
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
             var service = context.getBean(AgentChatService.class);
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.restoreChat(1L, 100L)).isInstanceOf(AccessDeniedException.class);
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.moveChat(1L, 100L, new MoveAgentChatRequest(null)))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.restoreChat(100L)).isInstanceOf(AccessDeniedException.class);
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.moveChat(100L, new MoveAgentChatRequest(null)))
                     .isInstanceOf(AccessDeniedException.class);
-            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createChat(1L, new CreateAgentChatRequest("聊天", null)))
+            org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.createChat(new CreateAgentChatRequest("聊天", null)))
                     .isInstanceOf(AccessDeniedException.class);
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
-        verify(store.agentChats, never()).restoreChat(anyLong(), anyLong());
-        verify(store.agentChats, never()).moveChat(anyLong(), anyLong(), any());
-        verify(store.agentChats, never()).createChat(anyLong(), any(CreateAgentChatRequest.class));
+        verify(store.agentChats, never()).restoreChat(anyLong());
+        verify(store.agentChats, never()).moveChat(anyLong(), any());
+        verify(store.agentChats, never()).createChat(any(CreateAgentChatRequest.class));
     }
 
     /** 创建与移动的表单、项目 ID 和路径 ID 必须在 MVC 层校验，失败不调用业务。 */
@@ -713,15 +717,15 @@ class SecurityIntegrationTest {
         org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(authentication);
         try {
             org.assertj.core.api.Assertions.assertThatThrownBy(() -> context.getBean(AgentChatService.class)
-                    .generateName(1L, new GenerateAgentChatNameRequest("文本"))).isInstanceOf(AccessDeniedException.class);
+                    .generateName(new GenerateAgentChatNameRequest("文本"))).isInstanceOf(AccessDeniedException.class);
         } finally { org.springframework.security.core.context.SecurityContextHolder.clearContext(); }
         grantAgentPermissions(AgentPermission.CHAT_GENERATE_NAME);
-        when(store.agentChats.generateName(anyLong(), any())).thenReturn(new AgentChatNameResponse("帮我学习Java"));
+        when(store.agentChats.generateName(any())).thenReturn(new AgentChatNameResponse("帮我学习Java"));
         String token = login();
         mvc.perform(post("/user/agent/chats/name/generate").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"message\":\"帮我学习Java\",\"userId\":999}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.chatName").value("帮我学习Java"));
-        verify(store.agentChats).generateName(eq(1L), eq(new GenerateAgentChatNameRequest("帮我学习Java")));
+        verify(store.agentChats).generateName(eq(new GenerateAgentChatNameRequest("帮我学习Java")));
         // 生成权限仅用于预览名称，不能直接创建聊天。
         mvc.perform(post("/user/agent/chats").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"chatName\":\"名称\"}"))

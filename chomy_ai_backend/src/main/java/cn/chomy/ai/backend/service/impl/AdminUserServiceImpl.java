@@ -1,5 +1,6 @@
 package cn.chomy.ai.backend.service.impl;
 
+import cn.chomy.ai.backend.security.UserContext;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
 import java.util.Objects;
@@ -44,13 +45,14 @@ public class AdminUserServiceImpl implements AdminUserService {
 
     /**
      * 创建管理员追加用户，固定审计来源，不自动授予任何角色。
-     * @param operatorId 当前认证管理员 ID
      * @param request 已校验表单
      * @return 数据库持久化后的公开资料
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public AdminUserView create(Long operatorId, AdminCreateUserRequest request) {
+    public AdminUserView create(AdminCreateUserRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long operatorId = UserContext.userId();
         // 身份与创建方式只能由服务端设置，客户端不能冒充创建人或将来源改为自注册。
         if (operatorId == null || operatorId <= 0) { throw new BizException("操作者不合法"); }
         String username = requireUsername(request.username());
@@ -86,7 +88,9 @@ public class AdminUserServiceImpl implements AdminUserService {
     /** 冻结前撤销旧会话，禁止操作者冻结自身。 */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public AdminUserView freeze(Long operatorId, Long userId) {
+    public AdminUserView freeze(Long userId) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long operatorId = UserContext.userId();
         // 先阻止当前管理账户自我冻结，再进入目标状态切换流程。
         rejectSelf(operatorId, userId, "不能冻结当前登录账户");
         return changeStatus(userId, UserStatus.FROZEN);
@@ -144,7 +148,9 @@ public class AdminUserServiceImpl implements AdminUserService {
     /** 物理删除用户及其角色关系，保留共享角色、权限及历史审计操作者 ID。 */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String delete(Long operatorId, Long userId) {
+    public String delete(Long userId) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long operatorId = UserContext.userId();
         rejectSelf(operatorId, userId, "不能删除当前登录账户");
         lockUser(userId);
         // 删除关联和用户处于同一个数据库事务；任一步失败均回滚，不能遗留本次操作造成的孤立关系。

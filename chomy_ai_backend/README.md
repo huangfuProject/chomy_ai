@@ -208,9 +208,9 @@ RBAC Service 保持持久化基础骨架，用户 Service 已实现资料白名�
 | PUT | `/user/info` | 修改昵称、性别、个性签名、头像 | Bearer JWT |
 | PUT | `/user/password` | 验证原密码并修改密码 | Bearer JWT |
 
-用户控制器只负责路由、参数校验、获取认证主体和委托 Service。`LoginController` 调用 `LoginService`，认证、登录时间维护、JWT/Redis 会话编排由 `LoginServiceImpl` 完成；`UserInfoController` 直接返回 `UserService` 的业务结果。Controller 不直接依赖 Mapper、Redis 或 AuthenticationManager。
+用户控制器只负责路由、参数校验和委托 Service。`LoginController` 调用 `LoginService`，认证、登录时间维护、JWT/Redis 会话编排由 `LoginServiceImpl` 完成；`UserInfoController` 直接返回 `UserService` 的业务结果。Controller 不直接依赖 Mapper、Redis 或 AuthenticationManager。
 
-这些个人接口统一从 `UserContext.userId()` 获取当前用户 ID，身份由前置安全链校验 JWT 的 `sub` 并绑定 Redis 用户会话后建立，不接受外部指定目标用户，不依赖角色即可维护自身资料。`/health/health` 和 Actuator health 的 GET 保持公开。其他业务接口必须配置类型为 3 的 `sys_permission`，按 `http_method` 和 Spring PathPattern 格式的 `api_path` 匹配；未配置时拒绝访问。同等具体模式须全部授权，精确路径优先于宽泛路径。无超级管理员隐式绕过。
+这些个人接口由 Service 实现统一从 `UserContext.userId()` 获取当前用户 ID，身份由前置安全链校验 JWT 的 `sub` 并绑定 Redis 用户会话后建立，不接受外部指定目标用户，不依赖角色即可维护自身资料。`/health/health` 和 Actuator health 的 GET 保持公开。其他业务接口必须配置类型为 3 的 `sys_permission`，按 `http_method` 和 Spring PathPattern 格式的 `api_path` 匹配；未配置时拒绝访问。同等具体模式须全部授权，精确路径优先于宽泛路径。无超级管理员隐式绕过。
 
 新数据库依次执行 V0 建库、V1 建表、V2 插入初始化数据。V1 已包含性别、可空手机号及邮箱的最终字段定义；这些脚本用于空库初始化，已有数据库应单独核对结构差异，不能重复执行 V1。本次脚本整理不会自动迁移真实数据库。
 
@@ -230,7 +230,7 @@ Authorization: Bearer <accessToken>
 
 MVC 层新增 `security.LoginInterceptor`，由 `config.WebMvcConfig` 注册到所有路径，在控制器执行前检查 Spring Security 上下文中是否存在已认证的 `JwtAuthenticationToken`。登录及健康检查与安全链共用 `SecurityConfig.publicEndpointMatcher` 白名单，按 HTTP 方法和路径精确放行；真实 CORS 预检也可通过。未登录由现有 `SecurityResponseHandler` 输出包含 `durationMs` 的统一 401，不跳转页面。仅携带 Token 请求头或用户 ID 不能通过状态检查。JWT 验签、Redis 会话及用户状态仍由前置安全链执行，拦截器不重复访问数据库或 Redis，也不替代 RBAC 校验。
 
-业务代码通过 `UserContext.userId()` 获取用户 ID，通过 `UserContext.require()` 获取 `CurrentUser`（用户资料、角色、权限及当前会话 ID），Controller 不再声明或传递 `Jwt` 参数。认证服务只在验签、Redis 会话、用户状态、密码版本及撤销时间检查全部通过后，把缓存中的用户快照附到认证结果；`LoginInterceptor` 再核对快照与 JWT 身份一致后绑定普通 `ThreadLocal`。公开请求不绑定用户；资料是登录时快照，查询最新资料仍使用 `/user/info`，退出从上下文取会话 ID 清理当前设备缓存。升级前的会话缺少用户资料时返回 401，用户须重新登录，无需数据库迁移。
+Service 实现通过 `UserContext.userId()` 获取用户 ID，通过 `UserContext.require()` 获取 `CurrentUser`（用户资料、角色、权限及当前会话 ID），Controller 不读取 `UserContext`，也不声明或传递 `Jwt`、当前用户 ID 参数，只将业务表单和目标资源 ID 委托给 Service。认证服务只在验签、Redis 会话、用户状态、密码版本及撤销时间检查全部通过后，把缓存中的用户快照附到认证结果；`LoginInterceptor` 再核对快照与 JWT 身份一致后绑定普通 `ThreadLocal`。公开请求不绑定用户；资料是登录时快照，查询最新资料仍使用 `/user/info`，退出从上下文取会话 ID 清理当前设备缓存。升级前的会话缺少用户资料时返回 401，用户须重新登录，无需数据库迁移。
 
 线程清理采用两层保障：拦截器进入时清空历史值，在 `afterCompletion` 删除上下文，在 `afterConcurrentHandlingStarted` 立即释放原请求线程；外层 `UserContextCleanupFilter` 使用 `try/finally` 覆盖安全链提前拒绝、异常及异步/错误分派。MVC `Callable` / `WebAsyncTask` 在工作线程执行前显式绑定，执行结束或异常后删除；异步结果分派时重新绑定并清理。普通线程池、`@Async`、`DeferredResult` 的生产线程不会自动继承用户身份，不可假定后台任务可以直接读取请求 ThreadLocal，必须显式传递所需业务身份并实施对应授权。禁止使用 `InheritableThreadLocal` 避免线程池串号。
 

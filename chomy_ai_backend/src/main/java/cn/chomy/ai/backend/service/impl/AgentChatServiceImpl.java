@@ -1,5 +1,6 @@
 package cn.chomy.ai.backend.service.impl;
 
+import cn.chomy.ai.backend.security.UserContext;
 import cn.chomy.ai.backend.common.exception.BizException;
 import cn.chomy.ai.backend.dto.agent.*;
 import cn.chomy.ai.backend.entity.AgentChat;
@@ -35,13 +36,14 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 以纯文本规则提供命名占位结果，后续模型调用逻辑集中替换此处，不改变接口协议。
-     * @param userId 当前认证用户 ID，必须为正数
      * @param request 必填命名文本，最多 2000 个字符
      * @return 合并空白后最多 20 个 Unicode 码点的名称，不写入数据库
      * @throws BizException 用户身份、表单或文本不合法时抛出
      */
     @Override
-    public AgentChatNameResponse generateName(Long userId, GenerateAgentChatNameRequest request) {
+    public AgentChatNameResponse generateName(GenerateAgentChatNameRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         // 服务层保留边界校验，避免内部调用绕过 MVC 的表单约束。
         if (request == null || request.message() == null || request.message().isBlank()) {
@@ -59,13 +61,14 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 对外创建入口，表单仅接收名称及项目 ID，派生字段和状态由服务端确定。
-     * @param userId 当前认证用户 ID
      * @param request 名称及可空项目 ID
      * @return 已持久化的未归档聊天
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public AgentChat createChat(Long userId, CreateAgentChatRequest request) {
+    public AgentChat createChat(CreateAgentChatRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         // 空表单必须拒绝，不能默默创建默认名称或其他用户的聊天。
         if (request == null) { throw new BizException("创建对话参数不能为空"); }
@@ -76,13 +79,14 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 归档本人聊天，只修改归档字段，不限制当前状态以支持幂等调用。
-     * @param userId 当前认证用户 ID
      * @param chatId 聊天 ID
      * @return 归档成功提示
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String archiveChat(Long userId, Long chatId) {
+    public String archiveChat(Long chatId) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         // 目标状态使用强类型枚举，不接受客户端任意数字。
         updateArchiveStatus(userId, chatId, AgentChatArchiveStatus.ARCHIVED);
         return "对话已归档";
@@ -90,13 +94,14 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 恢复本人聊天，只修改归档字段，不改变原项目、类型或创建时间。
-     * @param userId 当前认证用户 ID
      * @param chatId 聊天 ID
      * @return 恢复成功提示
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String restoreChat(Long userId, Long chatId) {
+    public String restoreChat(Long chatId) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         // 已未归档的聊天也允许再次恢复，保持接口幂等。
         updateArchiveStatus(userId, chatId, AgentChatArchiveStatus.UNARCHIVED);
         return "对话已恢复";
@@ -104,14 +109,15 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 同一事务中校验并锁定目标项目，再原子修改聊天关联，避免与项目删除形成孤立关联。
-     * @param userId 当前认证用户 ID
      * @param chatId 聊天 ID
      * @param request 目标项目 ID，为空时移出为无项目聊天
      * @return 移动成功提示
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String moveChat(Long userId, Long chatId, MoveAgentChatRequest request) {
+    public String moveChat(Long chatId, MoveAgentChatRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         requireId(chatId, "对话不合法");
         if (request == null) { throw new BizException("移动对话参数不能为空"); }
@@ -149,7 +155,7 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 内部创建入口，项目写入与删除共同锁定同一项目，防止删除后再写入孤立对话。
-     * @param userId 认证上下文用户 ID
+     * @param userId 内部可信业务指定的用户 ID，不接受 HTTP 入参
      * @param projectId 项目 ID，无项目时必须为空
      * @param chatName 允许重复的非空名称
      * @param type 显式归属类型
@@ -189,13 +195,14 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 读取本人指定项目下的全部对话，包含归档记录。
-     * @param userId 当前认证用户 ID
      * @param projectId 所属项目 ID
      * @param query 分页参数
      * @return 创建时间和 ID 倒序的对话分页
      */
     @Override
-    public IPage<AgentChatView> projectChats(Long userId, Long projectId, AgentPageQuery query) {
+    public IPage<AgentChatView> projectChats(Long projectId, AgentPageQuery query) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         validatePage(userId, query);
         requireId(projectId, "项目不合法");
         // 先验证项目所有者，不能仅凭客户端提交的项目 ID 查询对话。
@@ -208,12 +215,13 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 查询本人无项目的全部对话，同时检查类型和空项目 ID，避免返回不一致关联。
-     * @param userId 当前认证用户 ID
      * @param query 分页参数
      * @return 无项目对话分页
      */
     @Override
-    public IPage<AgentChatView> standaloneChats(Long userId, AgentPageQuery query) {
+    public IPage<AgentChatView> standaloneChats(AgentPageQuery query) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         validatePage(userId, query);
         return pageViews(userId, query, ownChats(userId).isNull(AgentChat::getProjectId)
                 .eq(AgentChat::getType, AgentChatType.STANDALONE));
@@ -221,19 +229,19 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 查询本人全部已归档对话，不限制项目归属。
-     * @param userId 当前认证用户 ID
      * @param query 分页参数
      * @return 带可空项目名的归档分页
      */
     @Override
-    public IPage<AgentChatView> archivedChats(Long userId, AgentPageQuery query) {
+    public IPage<AgentChatView> archivedChats(AgentPageQuery query) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         validatePage(userId, query);
         return pageViews(userId, query, ownChats(userId).eq(AgentChat::getArchived, AgentChatArchiveStatus.ARCHIVED));
     }
 
     /**
      * 仅更新当前用户对话的名称，归档对话同样允许重命名，保持原有归属及状态。
-     * @param userId 当前认证用户 ID
      * @param chatId 待重命名对话 ID
      * @param request 新名称，不能为空白且不得超过 128 个字符
      * @return 重命名成功提示
@@ -241,7 +249,9 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String renameChat(Long userId, Long chatId, RenameAgentChatRequest request) {
+    public String renameChat(Long chatId, RenameAgentChatRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         requireId(chatId, "对话不合法");
         // 非 HTTP 调用也必须遵守名称约束，名称允许重复但不能保存空白内容。
@@ -260,13 +270,14 @@ public class AgentChatServiceImpl extends ServiceImpl<AgentChatMapper, AgentChat
 
     /**
      * 使用用户与对话 ID 联合条件删除，避免先查后删的所有权检查窗口。
-     * @param userId 当前认证用户 ID
      * @param chatId 待删除对话 ID
      * @return 成功提示
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String deleteChat(Long userId, Long chatId) {
+    public String deleteChat(Long chatId) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         requireId(chatId, "对话不合法");
         // 物理删除本人记录；他人记录和不存在记录统一返回业务错误。

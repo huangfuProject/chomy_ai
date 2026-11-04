@@ -19,6 +19,9 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.mockito.MockedStatic;
+import cn.chomy.ai.backend.security.UserContext;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.BeanUtils;
@@ -38,6 +41,13 @@ import static org.mockito.Mockito.*;
  */
 @SuppressWarnings("unchecked")
 class AdminUserServiceTest {
+    /** 当前线程用户身份的受控边界，业务方法自行从上下文获取操作者。 */
+    private MockedStatic<UserContext> currentUser;
+
+    /** 测试退出时释放静态替身，避免污染后续请求和线程隔离测试。 */
+    @AfterEach
+    void clearCurrentUser() { if (currentUser != null) { currentUser.close(); } }
+
     /** 模拟用户和关系 Mapper，不替换业务实现。 */
     private UserMapper users;
     private UserRoleMapper userRoles;
@@ -53,6 +63,8 @@ class AdminUserServiceTest {
     /** 初始化两条虚构账户及 MyBatis 元数据，不访问真实账号或数据库。 */
     @BeforeEach
     void setUp() {
+        currentUser = mockStatic(UserContext.class);
+        currentUser.when(UserContext::userId).thenReturn(1L);
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "admin-test"), User.class);
         users = mock(UserMapper.class); userRoles = mock(UserRoleMapper.class); sessions = mock(JwtSessionService.class);
         encoder = new cn.chomy.ai.backend.config.SecurityConfig().passwordEncoder();
@@ -88,7 +100,7 @@ class AdminUserServiceTest {
     /** 创建信息由服务设置审计来源、初始状态和密码密文，不能自动授予任何角色。 */
     @Test
     void createsUserWithServerControlledAuditAndHash() {
-        AdminUserView created = service.create(1L, createRequest("new_user", "13800000003", "InitialPass123!"));
+        AdminUserView created = service.create(createRequest("new_user", "13800000003", "InitialPass123!"));
         User row = rows.get(created.id());
         assertThat(row.getCreateType()).isEqualTo(UserCreateType.ADMIN_CREATED);
         assertThat(row.getCreatedBy()).isEqualTo(1L);
@@ -103,8 +115,8 @@ class AdminUserServiceTest {
     @Test
     void optionalContactsAreNormalizedAndEmailIsReturned() {
         // 两种空号码均应变为 NULL，避免空字符串在唯一索引中发生冲突。
-        AdminUserView first = service.create(1L, createRequest("optional_one", null, "InitialPass123!"));
-        AdminUserView second = service.create(1L, new AdminCreateUserRequest("optional_two", "昵称", "", "test@example.com",
+        AdminUserView first = service.create(createRequest("optional_one", null, "InitialPass123!"));
+        AdminUserView second = service.create(new AdminCreateUserRequest("optional_two", "昵称", "", "test@example.com",
                 "InitialPass123!", null, null, null, null));
         assertThat(rows.get(first.id()).getPhone()).isNull();
         assertThat(rows.get(second.id()).getPhone()).isNull();
@@ -116,7 +128,7 @@ class AdminUserServiceTest {
     void rejectsIllegalUsernameBeforePersistence() {
         // 覆盖中文、标点、空格和非 ASCII 字母，明确用户名使用英文字符集。
         for (String username : List.of("中文", "bad-name", "user name", " admin", "admin ", "é")) {
-            assertThatThrownBy(() -> service.create(1L, createRequest(username, null, "InitialPass123!")))
+            assertThatThrownBy(() -> service.create(createRequest(username, null, "InitialPass123!")))
                     .isInstanceOf(BizException.class).hasMessage("非合法用户名");
         }
         verify(users, never()).insert(any(User.class));
@@ -126,12 +138,12 @@ class AdminUserServiceTest {
     @Test
     void rejectsDuplicatesAndConcurrentUniqueConflicts() {
         when(users.selectCount(any(Wrapper.class))).thenReturn(1L);
-        assertThatThrownBy(() -> service.create(1L, createRequest("duplicate", "13800000003", "InitialPass123!")))
+        assertThatThrownBy(() -> service.create(createRequest("duplicate", "13800000003", "InitialPass123!")))
                 .isInstanceOf(BizException.class).hasMessage("用户名或手机号已存在");
         verify(users, never()).insert(any(User.class));
         when(users.selectCount(any(Wrapper.class))).thenReturn(0L);
         when(users.insert(any(User.class))).thenThrow(new DuplicateKeyException("test-only-internal"));
-        assertThatThrownBy(() -> service.create(1L, createRequest("racing", "13800000003", "InitialPass123!")))
+        assertThatThrownBy(() -> service.create(createRequest("racing", "13800000003", "InitialPass123!")))
                 .isInstanceOf(BizException.class).hasMessage("用户名或手机号已存在");
     }
 
@@ -142,9 +154,9 @@ class AdminUserServiceTest {
         AdminUserView active = service.activate(2L);
         assertThat(active.active()).isTrue(); assertThat(active.frozen()).isTrue();
         assertThat(service.unfreeze(2L).frozen()).isFalse();
-        assertThat(service.freeze(1L, 2L).frozen()).isTrue();
+        assertThat(service.freeze(2L).frozen()).isTrue();
         verify(sessions, times(2)).revokeUserSessions(2L);
-        assertThatThrownBy(() -> service.freeze(1L, 1L)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> service.freeze(1L)).isInstanceOf(BizException.class);
     }
 
     /** 重置密码无需原密码，必须写入哈希并撤销原会话，超限密码不得写入。 */
@@ -177,13 +189,13 @@ class AdminUserServiceTest {
     /** 删除只清理目标用户角色关系及账户，不触碰共享角色，撤销失败时不能进入数据删除。 */
     @Test
     void deletesAccountAndRelationsAndRejectsSelfDelete() {
-        service.delete(1L, 2L);
+        service.delete(2L);
         assertThat(rows).doesNotContainKey(2L).containsKey(1L);
         var order = inOrder(sessions, userRoles, users);
         order.verify(sessions).revokeUserSessions(2L);
         order.verify(userRoles).delete(any(Wrapper.class));
         order.verify(users).deleteById(2L);
-        assertThatThrownBy(() -> service.delete(1L, 1L)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> service.delete(1L)).isInstanceOf(BizException.class);
     }
 
     /** Redis 故障会中止敏感操作，不能出现冻结后解冻仍恢复旧 Token 的降级行为。 */
@@ -191,7 +203,7 @@ class AdminUserServiceTest {
     void failsBeforeWritingWhenSessionRevocationFails() {
         doThrow(new org.springframework.data.redis.RedisConnectionFailureException("test-only"))
                 .when(sessions).revokeUserSessions(2L);
-        assertThatThrownBy(() -> service.delete(1L, 2L)).isInstanceOf(org.springframework.dao.DataAccessException.class);
+        assertThatThrownBy(() -> service.delete(2L)).isInstanceOf(org.springframework.dao.DataAccessException.class);
         verify(userRoles, never()).delete(any(Wrapper.class));
         verify(users, never()).deleteById(anyLong());
         assertThat(rows).containsKey(2L);

@@ -6,7 +6,6 @@ import cn.chomy.ai.backend.dto.auth.UserProfile;
 import cn.chomy.ai.backend.service.UserService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import cn.chomy.ai.backend.security.UserContext;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -28,8 +27,8 @@ public class UserInfoController {
      */
     @GetMapping("/info")
     public UserProfile info() {
-        // 目标用户固定来自已认证用户上下文，避免通过请求参数读取他人资料。
-        return userService.getProfile(UserContext.userId());
+        // 目标用户由服务层从已认证上下文取得，避免通过请求参数读取他人资料。
+        return userService.getProfile();
     }
 
     /**
@@ -40,7 +39,7 @@ public class UserInfoController {
     @PutMapping("/info")
     public UserProfile update(@Valid @RequestBody UpdateUserInfoRequest request) {
         // 将校验后的资料白名单交给业务层，不把客户端 JSON 直接作为用户实体更新。
-        return userService.updateProfile(UserContext.userId(), request);
+        return userService.updateProfile(request);
     }
 
     /**
@@ -51,6 +50,6 @@ public class UserInfoController {
     @PutMapping("/password")
     public String password(@Valid @RequestBody ChangePasswordRequest request) {
         // 业务层校验原密码并原子替换哈希，下一次认证时旧 JWT 的密码指纹将不再匹配。
-        return userService.changePassword(UserContext.userId(), request);
+        return userService.changePassword(request);
     }
 }

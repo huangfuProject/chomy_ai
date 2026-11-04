@@ -1,5 +1,6 @@
 package cn.chomy.ai.backend.service.impl;
 
+import cn.chomy.ai.backend.security.UserContext;
 import cn.chomy.ai.backend.enums.UserStatus;
 import cn.chomy.ai.backend.enums.ActivationStatus;
 import java.nio.charset.StandardCharsets;
@@ -29,7 +30,9 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     /** 根据认证用户 ID 读取资料，缺失用户不返回空对象。 */
     @Override
-    public UserProfile getProfile(Long userId) {
+    public UserProfile getProfile() {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         // 通过普通查询获取资料，沿用实体 select=false 策略，不读取密码哈希。
         User user = getById(userId);
         if (user == null) { throw new BizException("用户不存在"); }
@@ -39,12 +42,13 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
     /**
      * 只写入昵称、性别、邮箱、签名、头像和更新时间；显式 set 允许将可空资料清空。
-     * @param userId 当前认证用户 ID
      * @param request 已经过参数校验的完整资料表单
      * @return 更新后的资料
      */
     @Override
-    public UserProfile updateProfile(Long userId, UpdateUserInfoRequest request) {
+    public UserProfile updateProfile(UpdateUserInfoRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         // 限定当前可用账户，仅更新允许用户自行维护的字段；邮箱等可选资料通过显式 set 支持清空。
         int updated = baseMapper.update(Wrappers.lambdaUpdate(User.class).eq(User::getId, userId)
                 .eq(User::getStatus, UserStatus.NORMAL).eq(User::getActived, ActivationStatus.ACTIVE)
@@ -54,18 +58,19 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 .set(User::getUpdatedAt, OffsetDateTime.now()));
         if (updated != 1) { throw new BizException("用户不存在或当前不可用"); }
         // 从数据库重新读取结果，确保响应与持久化后的资料一致。
-        return getProfile(userId);
+        return getProfile();
     }
 
     /**
      * 验证原密码，拒绝与旧密码相同或超过 BCrypt 字节上限的新密码。
      * 更新条件包含旧哈希和可用状态，并发修改失败时不覆盖他人已更新的密码。
-     * @param userId 当前认证用户 ID
      * @param request 原密码及新密码
      * @return 密码修改完成及重新登录提示
      */
     @Override
-    public String changePassword(Long userId, ChangePasswordRequest request) {
+    public String changePassword(ChangePasswordRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         // 修改密码必须显式读取旧哈希，用于原密码验证和后续并发更新条件。
         User user = baseMapper.selectOne(Wrappers.lambdaQuery(User.class).select(User.class, field -> true)
                 .eq(User::getId, userId));

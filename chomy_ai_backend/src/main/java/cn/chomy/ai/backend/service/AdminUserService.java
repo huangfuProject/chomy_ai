@@ -6,19 +6,18 @@ import org.springframework.security.access.prepost.PreAuthorize;
 
 /**
  * 管理端用户业务接口，方法级权限与 SQL 中每个接口权限码对应，防止被其他调用入口绕过授权。
- * 所有操作者 ID 应来自认证主体，禁止采用表单中的创建人或角色信息。
+ * 所有操作者 ID 均由服务实现从认证用户上下文取得，禁止采用表单中的创建人或角色信息。
  *
  * @author chomy
  */
 public interface AdminUserService {
     /**
      * 创建管理员追加用户，设置创建人、密码哈希及默认账户状态。
-     * @param operatorId 当前认证操作者 ID
      * @param request 已校验的创建表单
      * @return 用户管理视图
      */
     @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.UserManagementPermission).CREATE.code)")
-    AdminUserView create(Long operatorId, AdminCreateUserRequest request);
+    AdminUserView create(AdminCreateUserRequest request);
 
     /**
      * @param userId 目标用户 ID
@@ -29,12 +28,11 @@ public interface AdminUserService {
 
     /**
      * 冻结用户并撤销旧会话，不允许操作者冻结自身。
-     * @param operatorId 当前操作者 ID
      * @param userId 目标用户 ID
      * @return 冻结后的用户资料
      */
     @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.UserManagementPermission).FREEZE.code)")
-    AdminUserView freeze(Long operatorId, Long userId);
+    AdminUserView freeze(Long userId);
 
     /**
      * @param userId 目标用户 ID
@@ -70,12 +68,11 @@ public interface AdminUserService {
 
     /**
      * 事务内删除用户及用户角色关系，不删除共享角色、权限和审计引用。
-     * @param operatorId 当前操作者 ID，不允许删除自身
      * @param userId 目标用户 ID
      * @return 成功提示
      */
     @PreAuthorize("hasAuthority(T(cn.chomy.ai.backend.enums.UserManagementPermission).DELETE.code)")
-    String delete(Long operatorId, Long userId);
+    String delete(Long userId);
 
     /**
      * @param query 已校验的分页及筛选条件

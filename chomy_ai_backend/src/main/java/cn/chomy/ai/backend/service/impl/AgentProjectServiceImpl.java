@@ -1,5 +1,6 @@
 package cn.chomy.ai.backend.service.impl;
 
+import cn.chomy.ai.backend.security.UserContext;
 import cn.chomy.ai.backend.common.exception.BizException;
 import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
 import cn.chomy.ai.backend.dto.agent.AgentPageQuery;
@@ -32,13 +33,14 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
 
     /**
      * 有界分页读取当前用户全部项目，固定排序并在查询中实施用户隔离。
-     * @param userId 当前认证用户 ID，必须为正数
      * @param query 页码从 1 开始、最大为 Integer.MAX_VALUE，每页 1 至 100 条
      * @return 项目分页；没有项目或超出末页时记录列表为空
      * @throws BizException 用户 ID 或分页参数不合法时拒绝查询
      */
     @Override
-    public IPage<AgentProject> pageProjects(Long userId, AgentPageQuery query) {
+    public IPage<AgentProject> pageProjects(AgentPageQuery query) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         // 内部调用也必须检查空值和分页上限，避免绕过 HTTP 校验造成无界查询。
         if (query == null || query.getCurrent() == null || query.getCurrent() < 1
@@ -54,13 +56,14 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
 
     /**
      * 创建本人项目并读取数据库生成的创建时间，名称仅作展示，不进行判重。
-     * @param userId 当前认证用户 ID
      * @param request 项目名和可选介绍
      * @return 已持久化的项目
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public AgentProject createProject(Long userId, CreateAgentProjectRequest request) {
+    public AgentProject createProject(CreateAgentProjectRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         // 服务层再次校验，避免内部调用绕过 Controller 的参数约束。
         if (request == null || request.projectName() == null || request.projectName().isBlank()
@@ -82,7 +85,6 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
 
     /**
      * 通过用户与项目 ID 联合条件原子更新白名单字段，不读取后再按裸 ID 更新。
-     * @param userId 当前认证用户 ID
      * @param projectId 待修改项目 ID
      * @param request 必填项目名称与可空介绍，空介绍清空为 NULL
      * @return 修改成功提示
@@ -90,7 +92,9 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String updateProject(Long userId, Long projectId, UpdateAgentProjectRequest request) {
+    public String updateProject(Long projectId, UpdateAgentProjectRequest request) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         requireId(projectId, "项目不合法");
         // 服务层重复检查业务边界，防止内部调用绕过 HTTP 参数校验。
@@ -115,13 +119,14 @@ public class AgentProjectServiceImpl extends ServiceImpl<AgentProjectMapper, Age
 
     /**
      * 锁定当前用户项目，再删除全部项目对话和项目；任何一步失败均回滚。
-     * @param userId 当前认证用户 ID
      * @param projectId 待删除项目 ID
      * @return 成功提示
      */
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public String deleteProject(Long userId, Long projectId) {
+    public String deleteProject(Long projectId) {
+        // 当前操作者固定取自认证上下文，不允许 Controller 或请求参数指定。
+        Long userId = UserContext.userId();
         requireId(userId, "用户不合法");
         requireId(projectId, "项目不合法");
         // 行锁串行化同一项目的删除；未来新增项目对话的写入也必须先锁定该项目并验证所有权。

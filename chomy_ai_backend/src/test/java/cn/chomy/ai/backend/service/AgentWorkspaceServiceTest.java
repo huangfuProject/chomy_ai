@@ -16,6 +16,9 @@ import java.time.OffsetDateTime;
 import java.util.List;
 import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.AfterEach;
+import org.mockito.MockedStatic;
+import cn.chomy.ai.backend.security.UserContext;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import static org.assertj.core.api.Assertions.*;
@@ -29,6 +32,13 @@ import static org.mockito.Mockito.*;
  */
 @SuppressWarnings({"unchecked", "rawtypes"})
 class AgentWorkspaceServiceTest {
+    /** 当前线程用户身份的受控边界，业务方法自行从上下文获取操作者。 */
+    private MockedStatic<UserContext> currentUser;
+
+    /** 测试退出时释放静态替身，避免污染后续请求和线程隔离测试。 */
+    @AfterEach
+    void clearCurrentUser() { if (currentUser != null) { currentUser.close(); } }
+
     /** 项目存储边界。 */
     private AgentProjectMapper projects;
     /** 对话存储边界。 */
@@ -41,6 +51,8 @@ class AgentWorkspaceServiceTest {
     /** 初始化真实 MyBatis 字段映射及业务服务，隔离外部数据库。 */
     @BeforeEach
     void setUp() {
+        currentUser = mockStatic(UserContext.class);
+        currentUser.when(UserContext::userId).thenReturn(1L);
         for (Class<?> type : List.of(AgentProject.class, AgentChat.class)) {
             TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "agent-test"), type);
         }
@@ -50,12 +62,47 @@ class AgentWorkspaceServiceTest {
         chatService = new AgentChatServiceImpl(chats, projects);
     }
 
+    /** 模拟异常上下文值，验证服务层仍拒绝非法操作者，结束后恢复正常身份。 */
+    private <T> T withUser(Long id, java.util.function.Supplier<T> action) {
+        currentUser.when(UserContext::userId).thenReturn(id);
+        try { return action.get(); }
+        finally { currentUser.when(UserContext::userId).thenReturn(1L); }
+    }
+
+    /** 缺少真实线程上下文时，服务入口必须拒绝执行，不能用默认用户或调用方参数兜底。 */
+    @Test
+    void rejectsCallsWithoutAuthenticatedContext() {
+        // 此分支关闭身份替身，直接验证生产 UserContext 的缺失身份行为。
+        currentUser.close();
+        currentUser = null;
+        UserContext.clear();
+        assertThatThrownBy(() -> projectService.pageProjects(new AgentPageQuery()))
+                .isInstanceOf(org.springframework.security.authentication.InsufficientAuthenticationException.class);
+        assertThatThrownBy(() -> chatService.createChat(new CreateAgentChatRequest("新聊天", null)))
+                .isInstanceOf(org.springframework.security.authentication.InsufficientAuthenticationException.class);
+        assertThatThrownBy(() -> chatService.archiveChat(100L))
+                .isInstanceOf(org.springframework.security.authentication.InsufficientAuthenticationException.class);
+        verifyNoInteractions(projects, chats);
+    }
+
+    /** 切换当前登录用户后，项目查询条件随上下文改变，不能沿用前一个用户的身份。 */
+    @Test
+    void scopesQueriesToTheCurrentContextUser() {
+        currentUser.when(UserContext::userId).thenReturn(2L);
+        when(projects.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> call.getArgument(0));
+        projectService.pageProjects(new AgentPageQuery());
+        ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
+        verify(projects).selectPage(any(Page.class), capture.capture());
+        assertOwned(capture.getValue(), "user_id", 2L);
+        verifyNoInteractions(chats);
+    }
+
     /** 占位命名可处理多行文本及 emoji，返回短名称且不访问持久化层。 */
     @Test
     void generatesPreviewNameWithoutPersisting() {
-        assertThat(chatService.generateName(1L, new GenerateAgentChatNameRequest("  帮我\n  学习\tJava  ")).chatName())
+        assertThat(chatService.generateName(new GenerateAgentChatNameRequest("  帮我\n  学习\tJava  ")).chatName())
                 .isEqualTo("帮我 学习 Java");
-        String emojiName = chatService.generateName(1L, new GenerateAgentChatNameRequest("😀".repeat(21))).chatName();
+        String emojiName = chatService.generateName(new GenerateAgentChatNameRequest("😀".repeat(21))).chatName();
         assertThat(emojiName).isEqualTo("😀".repeat(20));
         verifyNoInteractions(projects, chats);
     }
@@ -63,16 +110,16 @@ class AgentWorkspaceServiceTest {
     /** 命名入口的服务层拒绝空、纯空白、超长文本及非法身份，不能绕过 HTTP 校验。 */
     @Test
     void rejectsInvalidNameGenerationInput() {
-        assertThatThrownBy(() -> chatService.generateName(0L, new GenerateAgentChatNameRequest("命名文本")))
+        assertThatThrownBy(() -> withUser(0L, () -> chatService.generateName(new GenerateAgentChatNameRequest("命名文本"))))
                 .hasMessage("用户不合法");
-        assertThatThrownBy(() -> chatService.generateName(1L, null)).hasMessage("命名文本不能为空");
+        assertThatThrownBy(() -> chatService.generateName(null)).hasMessage("命名文本不能为空");
         for (String message : new String[]{null, "", " \n\t", "\u00a0"}) {
-            assertThatThrownBy(() -> chatService.generateName(1L, new GenerateAgentChatNameRequest(message)))
+            assertThatThrownBy(() -> chatService.generateName(new GenerateAgentChatNameRequest(message)))
                     .hasMessage("命名文本不能为空");
         }
-        assertThatThrownBy(() -> chatService.generateName(1L, new GenerateAgentChatNameRequest("字".repeat(2001))))
+        assertThatThrownBy(() -> chatService.generateName(new GenerateAgentChatNameRequest("字".repeat(2001))))
                 .hasMessage("命名文本不能超过2000个字符");
-        assertThat(chatService.generateName(1L, new GenerateAgentChatNameRequest("字".repeat(2000))).chatName()).hasSize(20);
+        assertThat(chatService.generateName(new GenerateAgentChatNameRequest("字".repeat(2000))).chatName()).hasSize(20);
         verifyNoInteractions(projects, chats);
     }
 
@@ -85,7 +132,7 @@ class AgentWorkspaceServiceTest {
             page.setTotal(5); page.setRecords(List.of(row)); return page;
         });
         AgentPageQuery query = new AgentPageQuery(); query.setCurrent(2L); query.setSize(2L);
-        var result = projectService.pageProjects(1L, query);
+        var result = projectService.pageProjects(query);
         assertThat(result.getCurrent()).isEqualTo(2);
         assertThat(result.getSize()).isEqualTo(2);
         assertThat(result.getTotal()).isEqualTo(5);
@@ -102,7 +149,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void projectPaginationSupportsEmptyPage() {
         when(projects.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> call.getArgument(0));
-        var result = projectService.pageProjects(1L, new AgentPageQuery());
+        var result = projectService.pageProjects(new AgentPageQuery());
         assertThat(result.getCurrent()).isEqualTo(1);
         assertThat(result.getSize()).isEqualTo(20);
         assertThat(result.getTotal()).isZero();
@@ -114,16 +161,16 @@ class AgentWorkspaceServiceTest {
     @Test
     void projectPaginationRejectsInvalidParameters() {
         for (Long userId : new Long[]{null, 0L, -1L}) {
-            assertThatThrownBy(() -> projectService.pageProjects(userId, new AgentPageQuery())).hasMessage("用户不合法");
+            assertThatThrownBy(() -> withUser(userId, () -> projectService.pageProjects(new AgentPageQuery()))).hasMessage("用户不合法");
         }
-        assertThatThrownBy(() -> projectService.pageProjects(1L, null)).hasMessage("分页参数不合法");
+        assertThatThrownBy(() -> projectService.pageProjects(null)).hasMessage("分页参数不合法");
         for (Long current : new Long[]{null, 0L, -1L, (long) Integer.MAX_VALUE + 1}) {
             AgentPageQuery query = new AgentPageQuery(); query.setCurrent(current);
-            assertThatThrownBy(() -> projectService.pageProjects(1L, query)).hasMessage("分页参数不合法");
+            assertThatThrownBy(() -> projectService.pageProjects(query)).hasMessage("分页参数不合法");
         }
         for (Long size : new Long[]{null, 0L, -1L, 101L}) {
             AgentPageQuery query = new AgentPageQuery(); query.setSize(size);
-            assertThatThrownBy(() -> projectService.pageProjects(1L, query)).hasMessage("分页参数不合法");
+            assertThatThrownBy(() -> projectService.pageProjects(query)).hasMessage("分页参数不合法");
         }
         verifyNoInteractions(projects, chats);
     }
@@ -132,7 +179,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void updatesOnlyOwnedProjectFields() {
         when(projects.update(isNull(), any(Wrapper.class))).thenReturn(1);
-        assertThat(projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest(" 新名称 ", "")))
+        assertThat(projectService.updateProject(10L, new UpdateAgentProjectRequest(" 新名称 ", "")))
                 .isEqualTo("项目已修改");
         ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(projects).update(isNull(), capture.capture());
@@ -147,7 +194,7 @@ class AgentWorkspaceServiceTest {
     /** 项目修改不区分不存在与他人所有，失败时不得触碰对话。 */
     @Test
     void rejectsUnownedProjectUpdate() {
-        assertThatThrownBy(() -> projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest("名称", null)))
+        assertThatThrownBy(() -> projectService.updateProject(10L, new UpdateAgentProjectRequest("名称", null)))
                 .hasMessage("项目不存在或无权访问");
         verifyNoInteractions(chats);
     }
@@ -156,7 +203,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void renamesOnlyOwnedChatName() {
         when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
-        assertThat(chatService.renameChat(1L, 100L, new RenameAgentChatRequest(" 新对话 "))).isEqualTo("对话已重命名");
+        assertThat(chatService.renameChat(100L, new RenameAgentChatRequest(" 新对话 "))).isEqualTo("对话已重命名");
         ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(chats).update(isNull(), capture.capture());
         var update = capture.getValue();
@@ -170,7 +217,7 @@ class AgentWorkspaceServiceTest {
     /** 他人或不存在的对话不能重命名，不查询或修改项目。 */
     @Test
     void rejectsUnownedChatRename() {
-        assertThatThrownBy(() -> chatService.renameChat(1L, 100L, new RenameAgentChatRequest("新对话")))
+        assertThatThrownBy(() -> chatService.renameChat(100L, new RenameAgentChatRequest("新对话")))
                 .hasMessage("对话不存在或无权访问");
         verifyNoInteractions(projects);
     }
@@ -178,23 +225,23 @@ class AgentWorkspaceServiceTest {
     /** 修改业务的服务层校验拒绝空白、超长名称和介绍以及非法身份与资源标识。 */
     @Test
     void updateServicesValidateInputsBeforeWriting() {
-        assertThatThrownBy(() -> projectService.updateProject(null, 10L, new UpdateAgentProjectRequest("名称", null)))
+        assertThatThrownBy(() -> withUser(null, () -> projectService.updateProject(10L, new UpdateAgentProjectRequest("名称", null))))
                 .hasMessage("用户不合法");
-        assertThatThrownBy(() -> chatService.renameChat(1L, 0L, new RenameAgentChatRequest("名称")))
+        assertThatThrownBy(() -> chatService.renameChat(0L, new RenameAgentChatRequest("名称")))
                 .hasMessage("对话不合法");
-        assertThatThrownBy(() -> projectService.updateProject(1L, 0L, new UpdateAgentProjectRequest("名称", null)))
+        assertThatThrownBy(() -> projectService.updateProject(0L, new UpdateAgentProjectRequest("名称", null)))
                 .hasMessage("项目不合法");
-        assertThatThrownBy(() -> chatService.renameChat(null, 10L, new RenameAgentChatRequest("名称")))
+        assertThatThrownBy(() -> withUser(null, () -> chatService.renameChat(10L, new RenameAgentChatRequest("名称"))))
                 .hasMessage("用户不合法");
-        assertThatThrownBy(() -> projectService.updateProject(1L, 10L, null)).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.renameChat(1L, 10L, null)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> projectService.updateProject(10L, null)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.renameChat(10L, null)).isInstanceOf(BizException.class);
         for (String name : new String[]{null, "", "  ", "a".repeat(129)}) {
-            assertThatThrownBy(() -> projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest(name, null)))
+            assertThatThrownBy(() -> projectService.updateProject(10L, new UpdateAgentProjectRequest(name, null)))
                     .isInstanceOf(BizException.class);
-            assertThatThrownBy(() -> chatService.renameChat(1L, 10L, new RenameAgentChatRequest(name)))
+            assertThatThrownBy(() -> chatService.renameChat(10L, new RenameAgentChatRequest(name)))
                     .isInstanceOf(BizException.class);
         }
-        assertThatThrownBy(() -> projectService.updateProject(1L, 10L, new UpdateAgentProjectRequest("名称", "a".repeat(2001))))
+        assertThatThrownBy(() -> projectService.updateProject(10L, new UpdateAgentProjectRequest("名称", "a".repeat(2001))))
                 .hasMessage("项目介绍不能超过2000个字符");
         verifyNoInteractions(projects, chats);
     }
@@ -206,7 +253,7 @@ class AgentWorkspaceServiceTest {
             AgentChat row = call.getArgument(0); row.setId(100L); return 1;
         });
         when(chats.selectById(100L)).thenReturn(chat(100L, null));
-        chatService.createChat(1L, new CreateAgentChatRequest(" 新聊天 ", null));
+        chatService.createChat(new CreateAgentChatRequest(" 新聊天 ", null));
         ArgumentCaptor<AgentChat> capture = ArgumentCaptor.forClass(AgentChat.class);
         verify(chats).insert(capture.capture());
         assertThat(capture.getValue().getUserId()).isEqualTo(1L);
@@ -220,13 +267,13 @@ class AgentWorkspaceServiceTest {
     /** 创建入口不能关联他人或不存在的项目，也不能接受空表单、非法项目 ID 或名称。 */
     @Test
     void rejectsInvalidChatCreateRequest() {
-        assertThatThrownBy(() -> chatService.createChat(1L, new CreateAgentChatRequest("聊天", 50L)))
+        assertThatThrownBy(() -> chatService.createChat(new CreateAgentChatRequest("聊天", 50L)))
                 .hasMessage("项目不存在或无权访问");
-        assertThatThrownBy(() -> chatService.createChat(1L, new CreateAgentChatRequest("聊天", 0L)))
+        assertThatThrownBy(() -> chatService.createChat(new CreateAgentChatRequest("聊天", 0L)))
                 .isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.createChat(1L, new CreateAgentChatRequest(" ", null)))
+        assertThatThrownBy(() -> chatService.createChat(new CreateAgentChatRequest(" ", null)))
                 .isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.createChat(1L, (CreateAgentChatRequest) null)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.createChat((CreateAgentChatRequest) null)).isInstanceOf(BizException.class);
         verifyNoInteractions(chats);
     }
 
@@ -235,8 +282,8 @@ class AgentWorkspaceServiceTest {
     void archiveAndRestoreOnlyChangeOwnedStatus() {
         when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
         for (int i = 0; i < 2; i++) {
-            assertThat(chatService.archiveChat(1L, 100L)).isEqualTo("对话已归档");
-            assertThat(chatService.restoreChat(1L, 100L)).isEqualTo("对话已恢复");
+            assertThat(chatService.archiveChat(100L)).isEqualTo("对话已归档");
+            assertThat(chatService.restoreChat(100L)).isEqualTo("对话已恢复");
         }
         ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(chats, times(4)).update(isNull(), capture.capture());
@@ -255,7 +302,7 @@ class AgentWorkspaceServiceTest {
     void movesChatUnderTargetProjectLock() {
         when(projects.selectOne(any(Wrapper.class))).thenReturn(project(20L, "目标项目"));
         when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
-        assertThat(chatService.moveChat(1L, 100L, new MoveAgentChatRequest(20L))).isEqualTo("对话已移动");
+        assertThat(chatService.moveChat(100L, new MoveAgentChatRequest(20L))).isEqualTo("对话已移动");
         var order = inOrder(projects, chats);
         ArgumentCaptor<Wrapper> lock = ArgumentCaptor.forClass(Wrapper.class);
         order.verify(projects).selectOne(lock.capture());
@@ -272,7 +319,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void movesChatToStandalone() {
         when(chats.update(isNull(), any(Wrapper.class))).thenReturn(1);
-        chatService.moveChat(1L, 100L, new MoveAgentChatRequest(null));
+        chatService.moveChat(100L, new MoveAgentChatRequest(null));
         ArgumentCaptor<LambdaUpdateWrapper> capture = ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
         verify(chats).update(isNull(), capture.capture());
         assertOwned(capture.getValue(), "id", 100L); assertOwned(capture.getValue(), "user_id", 1L);
@@ -284,7 +331,7 @@ class AgentWorkspaceServiceTest {
     /** 目标项目不存在或不属于本人时不得更新聊天。 */
     @Test
     void rejectsForeignMoveTargetBeforeWriting() {
-        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, new MoveAgentChatRequest(20L)))
+        assertThatThrownBy(() -> chatService.moveChat(100L, new MoveAgentChatRequest(20L)))
                 .hasMessage("项目不存在或无权访问");
         verifyNoInteractions(chats);
     }
@@ -292,9 +339,9 @@ class AgentWorkspaceServiceTest {
     /** 归档、恢复和移动对不存在或他人聊天统一失败，不能假报成功。 */
     @Test
     void lifecycleRejectsUnownedChats() {
-        assertThatThrownBy(() -> chatService.archiveChat(1L, 100L)).hasMessage("对话不存在或无权访问");
-        assertThatThrownBy(() -> chatService.restoreChat(1L, 100L)).hasMessage("对话不存在或无权访问");
-        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, new MoveAgentChatRequest(null)))
+        assertThatThrownBy(() -> chatService.archiveChat(100L)).hasMessage("对话不存在或无权访问");
+        assertThatThrownBy(() -> chatService.restoreChat(100L)).hasMessage("对话不存在或无权访问");
+        assertThatThrownBy(() -> chatService.moveChat(100L, new MoveAgentChatRequest(null)))
                 .hasMessage("对话不存在或无权访问");
         verifyNoInteractions(projects);
     }
@@ -302,12 +349,12 @@ class AgentWorkspaceServiceTest {
     /** 内部入口同样校验身份、聊天 ID 和目标项目边界，非法请求不得触碰存储。 */
     @Test
     void lifecycleValidatesIdsAndNullRequest() {
-        assertThatThrownBy(() -> chatService.archiveChat(null, 100L)).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.restoreChat(1L, 0L)).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, null)).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.moveChat(1L, 100L, new MoveAgentChatRequest(-1L))).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.moveChat(0L, 100L, new MoveAgentChatRequest(null))).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> chatService.moveChat(1L, 0L, new MoveAgentChatRequest(null))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> withUser(null, () -> chatService.archiveChat(100L))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.restoreChat(0L)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(100L, null)).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(100L, new MoveAgentChatRequest(-1L))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> withUser(0L, () -> chatService.moveChat(100L, new MoveAgentChatRequest(null)))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> chatService.moveChat(0L, new MoveAgentChatRequest(null))).isInstanceOf(BizException.class);
         verifyNoInteractions(projects, chats);
     }
 
@@ -320,7 +367,7 @@ class AgentWorkspaceServiceTest {
         AgentProject stored = project(10L, "同名项目");
         when(projects.selectById(10L)).thenReturn(stored);
         for (int i = 0; i < 2; i++) {
-            assertThat(projectService.createProject(1L, new CreateAgentProjectRequest(" 同名项目 ", "介绍"))).isSameAs(stored);
+            assertThat(projectService.createProject(new CreateAgentProjectRequest(" 同名项目 ", "介绍"))).isSameAs(stored);
         }
         ArgumentCaptor<AgentProject> capture = ArgumentCaptor.forClass(AgentProject.class);
         verify(projects, times(2)).insert(capture.capture());
@@ -334,9 +381,9 @@ class AgentWorkspaceServiceTest {
     /** 拒绝无效身份和空白名称，服务层也不能绕过表单边界。 */
     @Test
     void rejectsInvalidProjectBeforeWriting() {
-        assertThatThrownBy(() -> projectService.createProject(null, new CreateAgentProjectRequest("项目", null))).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> projectService.createProject(1L, new CreateAgentProjectRequest("  ", null))).isInstanceOf(BizException.class);
-        assertThatThrownBy(() -> projectService.createProject(1L, new CreateAgentProjectRequest("a".repeat(129), null))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> withUser(null, () -> projectService.createProject(new CreateAgentProjectRequest("项目", null)))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> projectService.createProject(new CreateAgentProjectRequest("  ", null))).isInstanceOf(BizException.class);
+        assertThatThrownBy(() -> projectService.createProject(new CreateAgentProjectRequest("a".repeat(129), null))).isInstanceOf(BizException.class);
         verifyNoInteractions(projects, chats);
     }
 
@@ -344,7 +391,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void cannotDeleteForeignProject() {
         when(projects.selectOne(any(Wrapper.class))).thenReturn(null);
-        assertThatThrownBy(() -> projectService.deleteProject(1L, 20L)).hasMessage("项目不存在或无权访问");
+        assertThatThrownBy(() -> projectService.deleteProject(20L)).hasMessage("项目不存在或无权访问");
         ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
         verify(projects).selectOne(capture.capture());
         assertOwned(capture.getValue(), "user_id", 1L);
@@ -358,7 +405,7 @@ class AgentWorkspaceServiceTest {
     void deletesAllProjectChatsBeforeProject() {
         when(projects.selectOne(any(Wrapper.class))).thenReturn(project(10L, "项目"));
         when(projects.delete(any(Wrapper.class))).thenReturn(1);
-        assertThat(projectService.deleteProject(1L, 10L)).contains("全部对话");
+        assertThat(projectService.deleteProject(10L)).contains("全部对话");
         var order = inOrder(projects, chats);
         order.verify(projects).selectOne(any(Wrapper.class));
         ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
@@ -372,7 +419,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void chatDeletionAlwaysChecksOwner() {
         when(chats.delete(any(Wrapper.class))).thenReturn(0);
-        assertThatThrownBy(() -> chatService.deleteChat(1L, 99L)).hasMessage("对话不存在或无权访问");
+        assertThatThrownBy(() -> chatService.deleteChat(99L)).hasMessage("对话不存在或无权访问");
         ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
         verify(chats).delete(capture.capture());
         assertOwned(capture.getValue(), "user_id", 1L);
@@ -390,7 +437,7 @@ class AgentWorkspaceServiceTest {
         });
         when(projects.selectList(any(Wrapper.class))).thenReturn(List.of(project(10L, "同名项目")));
         AgentPageQuery query = new AgentPageQuery(); query.setCurrent(2L); query.setSize(2L);
-        var result = chatService.archivedChats(1L, query);
+        var result = chatService.archivedChats(query);
         assertThat(result.getTotal()).isEqualTo(41); assertThat(result.getCurrent()).isEqualTo(2);
         assertThat(result.getSize()).isEqualTo(2);
         assertThat(result.getRecords()).extracting(AgentChatView::projectName).containsExactly("同名项目", null);
@@ -408,7 +455,7 @@ class AgentWorkspaceServiceTest {
     @Test
     void standalonePageUsesBothMembershipConditions() {
         when(chats.selectPage(any(Page.class), any(Wrapper.class))).thenAnswer(call -> call.getArgument(0));
-        assertThat(chatService.standaloneChats(1L, new AgentPageQuery()).getRecords()).isEmpty();
+        assertThat(chatService.standaloneChats(new AgentPageQuery()).getRecords()).isEmpty();
         ArgumentCaptor<Wrapper> capture = ArgumentCaptor.forClass(Wrapper.class);
         verify(chats).selectPage(any(Page.class), capture.capture());
         assertOwned(capture.getValue(), "user_id", 1L);
@@ -420,7 +467,7 @@ class AgentWorkspaceServiceTest {
     /** 查询项目页前必须验证项目所有者，拒绝后不得继续查询对话。 */
     @Test
     void projectPageRejectsForeignProject() {
-        assertThatThrownBy(() -> chatService.projectChats(1L, 50L, new AgentPageQuery())).hasMessage("项目不存在或无权访问");
+        assertThatThrownBy(() -> chatService.projectChats(50L, new AgentPageQuery())).hasMessage("项目不存在或无权访问");
         verifyNoInteractions(chats);
     }
 
@@ -469,10 +516,10 @@ class AgentWorkspaceServiceTest {
     void rejectsInvalidPageParameters() {
         for (long size : new long[]{0, 101}) {
             AgentPageQuery query = new AgentPageQuery(); query.setSize(size);
-            assertThatThrownBy(() -> chatService.archivedChats(1L, query)).hasMessage("分页参数不合法");
+            assertThatThrownBy(() -> chatService.archivedChats(query)).hasMessage("分页参数不合法");
         }
         AgentPageQuery query = new AgentPageQuery(); query.setCurrent(null);
-        assertThatThrownBy(() -> chatService.standaloneChats(1L, query)).hasMessage("分页参数不合法");
+        assertThatThrownBy(() -> chatService.standaloneChats(query)).hasMessage("分页参数不合法");
         verifyNoInteractions(projects, chats);
     }
 

@@ -7,7 +7,6 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
-import cn.chomy.ai.backend.security.UserContext;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -30,8 +29,8 @@ public class AgentChatController {
     @PostMapping("/name/generate")
     public AgentChatNameResponse generateName(
             @Valid @RequestBody GenerateAgentChatNameRequest request) {
-        // 当前用户来自认证用户上下文，文本校验及占位命名由 Service 完成，Controller 不拼接名称。
-        return chatService.generateName(UserContext.userId(), request);
+        // 服务层从认证上下文取得当前用户，文本校验及占位命名由 Service 完成，Controller 不拼接名称。
+        return chatService.generateName(request);
     }
 
     /**
@@ -42,7 +41,7 @@ public class AgentChatController {
     @PostMapping
     public AgentChat create(@Valid @RequestBody CreateAgentChatRequest request) {
         // 只传递白名单字段，忽略客户端提供的所有者、类型及归档状态。
-        return chatService.createChat(UserContext.userId(), request);
+        return chatService.createChat(request);
     }
 
     /**
@@ -54,7 +53,7 @@ public class AgentChatController {
     public String archive(
             @PathVariable @Positive(message = "对话ID必须大于零") Long chatId) {
         // 归档状态由固定业务操作决定，不接收客户端任意状态编码。
-        return chatService.archiveChat(UserContext.userId(), chatId);
+        return chatService.archiveChat(chatId);
     }
 
     /**
@@ -66,7 +65,7 @@ public class AgentChatController {
     public String restore(
             @PathVariable @Positive(message = "对话ID必须大于零") Long chatId) {
         // 恢复独立鉴权，拥有归档权限不代表拥有恢复权限。
-        return chatService.restoreChat(UserContext.userId(), chatId);
+        return chatService.restoreChat(chatId);
     }
 
     /**
@@ -80,7 +79,7 @@ public class AgentChatController {
             @PathVariable @Positive(message = "对话ID必须大于零") Long chatId,
             @Valid @RequestBody MoveAgentChatRequest request) {
         // 项目校验、行锁与关联字段同步更新由事务服务统一完成。
-        return chatService.moveChat(UserContext.userId(), chatId, request);
+        return chatService.moveChat(chatId, request);
     }
 
     /**
@@ -91,7 +90,7 @@ public class AgentChatController {
     @GetMapping("/standalone")
     public IPage<AgentChatView> standalone(@Valid @ModelAttribute AgentPageQuery query) {
         // 当前用户 ID 来自认证主体，避免客户端查询他人对话。
-        return chatService.standaloneChats(UserContext.userId(), query);
+        return chatService.standaloneChats(query);
     }
 
     /**
@@ -102,7 +101,7 @@ public class AgentChatController {
     @GetMapping("/archived")
     public IPage<AgentChatView> archived(@Valid @ModelAttribute AgentPageQuery query) {
         // 项目名称由业务层查询，Controller 不进行额外数据访问。
-        return chatService.archivedChats(UserContext.userId(), query);
+        return chatService.archivedChats(query);
     }
 
     /**
@@ -116,7 +115,7 @@ public class AgentChatController {
             @PathVariable @Positive(message = "对话ID必须大于零") Long chatId,
             @Valid @RequestBody RenameAgentChatRequest request) {
         // 所有权条件与字段白名单由 Service 处理，避免客户端借重命名移动对话或变更归档状态。
-        return chatService.renameChat(UserContext.userId(), chatId, request);
+        return chatService.renameChat(chatId, request);
     }
 
     /**
@@ -128,6 +127,6 @@ public class AgentChatController {
     public String delete(
             @PathVariable @Positive(message = "对话ID必须大于零") Long chatId) {
         // 删除条件与所有权在服务层合并执行，防止横向越权。
-        return chatService.deleteChat(UserContext.userId(), chatId);
+        return chatService.deleteChat(chatId);
     }
 }
