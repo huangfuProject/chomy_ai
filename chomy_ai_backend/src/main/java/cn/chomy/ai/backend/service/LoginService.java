@@ -2,7 +2,6 @@ package cn.chomy.ai.backend.service;
 
 import cn.chomy.ai.backend.dto.auth.LoginRequest;
 import cn.chomy.ai.backend.dto.auth.LoginResponse;
-import org.springframework.security.oauth2.jwt.Jwt;
 
 /**
  * 用户登录与退出业务接口，统一编排账户认证、登录时间维护和 Redis/JWT 会话管理。
@@ -23,8 +22,7 @@ public interface LoginService {
     /**
      * 撤销当前 JWT 对应的 Redis 会话，不影响该账户其他设备。
      *
-     * @param jwt 从已认证主体获取的 JWT，不接受任意客户端指定的目标会话
      * @return 公开的退出结果提示
      */
-    String logout(Jwt jwt);
+    String logout();
 }

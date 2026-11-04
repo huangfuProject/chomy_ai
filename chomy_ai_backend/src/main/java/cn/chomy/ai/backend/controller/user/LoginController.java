@@ -5,8 +5,6 @@ import cn.chomy.ai.backend.dto.auth.LoginResponse;
 import cn.chomy.ai.backend.service.LoginService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -35,14 +33,13 @@ public class LoginController {
     }
 
     /**
-     * 将已认证的 JWT 交给 Service 退出当前会话。
+     * 由 Service 从当前用户上下文取得会话标识并退出。
      *
-     * @param jwt 安全框架提供的当前认证主体
      * @return 退出业务结果
      */
     @PostMapping("/logout")
-    public String logout(@AuthenticationPrincipal Jwt jwt) {
-        // 直接使用框架认证主体，不接受客户端另行指定退出目标。
-        return loginService.logout(jwt);
+    public String logout() {
+        // 由服务读取已认证用户上下文，不接受客户端另行指定退出目标。
+        return loginService.logout();
     }
 }

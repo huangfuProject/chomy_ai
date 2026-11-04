@@ -210,7 +210,7 @@ RBAC Service 保持持久化基础骨架，用户 Service 已实现资料白名�
 
 用户控制器只负责路由、参数校验、获取认证主体和委托 Service。`LoginController` 调用 `LoginService`，认证、登录时间维护、JWT/Redis 会话编排由 `LoginServiceImpl` 完成；`UserInfoController` 直接返回 `UserService` 的业务结果。Controller 不直接依赖 Mapper、Redis 或 AuthenticationManager。
 
-这些个人接口只从 JWT 的 `sub` 获取用户 ID，不接受外部指定目标用户，不依赖角色即可维护自身资料。`/health/health` 和 Actuator health 的 GET 保持公开。其他业务接口必须配置类型为 3 的 `sys_permission`，按 `http_method` 和 Spring PathPattern 格式的 `api_path` 匹配；未配置时拒绝访问。同等具体模式须全部授权，精确路径优先于宽泛路径。无超级管理员隐式绕过。
+这些个人接口统一从 `UserContext.userId()` 获取当前用户 ID，身份由前置安全链校验 JWT 的 `sub` 并绑定 Redis 用户会话后建立，不接受外部指定目标用户，不依赖角色即可维护自身资料。`/health/health` 和 Actuator health 的 GET 保持公开。其他业务接口必须配置类型为 3 的 `sys_permission`，按 `http_method` 和 Spring PathPattern 格式的 `api_path` 匹配；未配置时拒绝访问。同等具体模式须全部授权，精确路径优先于宽泛路径。无超级管理员隐式绕过。
 
 新数据库依次执行 V0 建库、V1 建表、V2 插入初始化数据。V1 已包含性别、可空手机号及邮箱的最终字段定义；这些脚本用于空库初始化，已有数据库应单独核对结构差异，不能重复执行 V1。本次脚本整理不会自动迁移真实数据库。
 
@@ -222,13 +222,17 @@ RBAC Service 保持持久化基础骨架，用户 Service 已实现资料白名�
 
 数据库 `password_hash` 须保存 BCrypt 哈希，支持标准 `$2a$` / `$2b$` 格式及 `{bcrypt}` 前缀；服务端新密码编码使用带 `{bcrypt}` 前缀的 BCrypt，不支持明文及 `{noop}`。首次账号及角色分配需由初始化或后续后台流程完成，项目不创建默认账号。
 
-登录响应继续使用 `code / message / data / durationMs`，`data` 包含 `accessToken`、`tokenType=Bearer`、`expiresIn`（秒）、`user`、`roles`、`permissions`。登录时只加载正常角色、正常权限，权限去重后与角色分别缓存在 Redis 的 `chomy:auth:roles:<jti>`、`chomy:auth:permissions:<jti>` 中，会话元信息保存在 `chomy:auth:session:<jti>`，三者默认有效期均为 7200 秒，缺失任一项均拒绝认证。JWT 仅含用户 ID、jti、签发者和时间，不把完整角色权限放入 JWT。Redis 中不保存 JWT 原文、原密码或密码哈希，保存密码哈希的 SHA-256 指纹用于版本核对。后续请求使用：
+登录响应继续使用 `code / message / data / durationMs`，`data` 包含 `accessToken`、`tokenType=Bearer`、`expiresIn`（秒）、`user`、`roles`、`permissions`。登录时只加载正常角色、正常权限，权限去重后与角色分别缓存在 Redis 的 `chomy:auth:roles:<jti>`、`chomy:auth:permissions:<jti>` 中，会话元信息及不含密码的 `UserProfile` 用户资料保存在 `chomy:auth:session:<jti>`，三者默认有效期均为 7200 秒，缺失任一项均拒绝认证。JWT 仅含用户 ID、jti、签发者和时间，不把完整角色权限放入 JWT。Redis 中不保存 JWT 原文、原密码或密码哈希，保存密码哈希的 SHA-256 指纹用于版本核对。后续请求使用：
 
 ```http
 Authorization: Bearer <accessToken>
 ```
 
 MVC 层新增 `security.LoginInterceptor`，由 `config.WebMvcConfig` 注册到所有路径，在控制器执行前检查 Spring Security 上下文中是否存在已认证的 `JwtAuthenticationToken`。登录及健康检查与安全链共用 `SecurityConfig.publicEndpointMatcher` 白名单，按 HTTP 方法和路径精确放行；真实 CORS 预检也可通过。未登录由现有 `SecurityResponseHandler` 输出包含 `durationMs` 的统一 401，不跳转页面。仅携带 Token 请求头或用户 ID 不能通过状态检查。JWT 验签、Redis 会话及用户状态仍由前置安全链执行，拦截器不重复访问数据库或 Redis，也不替代 RBAC 校验。
+
+业务代码通过 `UserContext.userId()` 获取用户 ID，通过 `UserContext.require()` 获取 `CurrentUser`（用户资料、角色、权限及当前会话 ID），Controller 不再声明或传递 `Jwt` 参数。认证服务只在验签、Redis 会话、用户状态、密码版本及撤销时间检查全部通过后，把缓存中的用户快照附到认证结果；`LoginInterceptor` 再核对快照与 JWT 身份一致后绑定普通 `ThreadLocal`。公开请求不绑定用户；资料是登录时快照，查询最新资料仍使用 `/user/info`，退出从上下文取会话 ID 清理当前设备缓存。升级前的会话缺少用户资料时返回 401，用户须重新登录，无需数据库迁移。
+
+线程清理采用两层保障：拦截器进入时清空历史值，在 `afterCompletion` 删除上下文，在 `afterConcurrentHandlingStarted` 立即释放原请求线程；外层 `UserContextCleanupFilter` 使用 `try/finally` 覆盖安全链提前拒绝、异常及异步/错误分派。MVC `Callable` / `WebAsyncTask` 在工作线程执行前显式绑定，执行结束或异常后删除；异步结果分派时重新绑定并清理。普通线程池、`@Async`、`DeferredResult` 的生产线程不会自动继承用户身份，不可假定后台任务可以直接读取请求 ThreadLocal，必须显式传递所需业务身份并实施对应授权。禁止使用 `InheritableThreadLocal` 避免线程池串号。
 
 JWT 签名、签发者或有效期不正确、Redis 会话缺失、用户被冻结/未激活、密码版本变化，均返回统一 401。角色权限来自登录时快照，后台调整角色、权限或授权关系后必须对受影响用户调用 `JwtSessionService.revokeUserSessions(userId)`，使旧会话失效并要求重新登录；同一秒重新签发的会话也可能保守失效，下一秒重试即可。接口资源定义和禁用状态实时查询数据库。权限不足返回 403，认证 Redis/数据库故障返回 503，不回退到仅检查 JWT 签名。
 

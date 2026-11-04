@@ -86,7 +86,7 @@ public class JwtSessionService {
         String token = encoder.encode(JwtEncoderParameters.from(JwsHeader.with(MacAlgorithm.HS256).build(), claims))
                 .getTokenValue();
         CachedSession session = new CachedSession(principal.getAccount().getId(), principal.getAccount().getUsername(),
-                principal.getPasswordFingerprint());
+                principal.getPasswordFingerprint(), UserProfile.from(principal.getAccount()));
         try {
             // 角色、权限及会话使用相同 TTL；只在三项全部写入后向调用方发放令牌。
             Duration ttl = Duration.ofSeconds(ttlSeconds);
@@ -123,7 +123,12 @@ public class JwtSessionService {
             if (json == null) { throw invalidSession(); }
             // 绑定会话用户与 JWT 主体，禁止用其他会话的角色权限替换当前身份。
             CachedSession session = objectMapper.readValue(json, CachedSession.class);
-            if (session.userId() == null || !session.userId().toString().equals(jwt.getSubject())) { throw invalidSession(); }
+            if (session.userId() == null || !session.userId().toString().equals(jwt.getSubject())
+                    || session.profile() == null || !session.userId().equals(session.profile().id())
+                    || !java.util.Objects.equals(session.username(), session.profile().username())) {
+                // 旧版或不完整会话不能提供可信的用户资料上下文，要求重新登录补齐缓存。
+                throw invalidSession();
+            }
             // 分别恢复登录时的角色和权限快照，任一缓存缺失均不允许带不完整权限继续访问。
             String roleJson = redis.opsForValue().get("chomy:auth:roles:" + jwt.getId());
             String permissionJson = redis.opsForValue().get("chomy:auth:permissions:" + jwt.getId());
@@ -148,8 +153,11 @@ public class JwtSessionService {
             if (version != null && (jwt.getIssuedAt() == null
                     || jwt.getIssuedAt().getEpochSecond() <= Long.parseLong(version))) { throw invalidSession(); }
             // 只有全部状态检查通过后，才把缓存中的角色权限转换为已认证的安全主体。
-            return new JwtAuthenticationToken(jwt,
+            JwtAuthenticationToken authentication = new JwtAuthenticationToken(jwt,
                     RbacUserDetailsService.authorities(roles, permissions), account.getUsername());
+            // 将已校验的 Redis 用户快照附于认证结果，MVC 拦截器直接使用，不重复读取缓存。
+            authentication.setDetails(new CurrentUser(jwt.getId(), session.profile(), roles, permissions));
+            return authentication;
         } catch (IOException | DataAccessException | NumberFormatException exception) {
             // 缓存损坏或认证基础设施异常时返回服务不可用，绝不把异常当作校验通过。
             throw new AuthenticationServiceException("认证服务暂不可用", exception);
@@ -159,9 +167,9 @@ public class JwtSessionService {
     /**
      * 注销当前 JWT，会话不存在时也视为已注销，不修改其他设备的登录状态。
      *
-     * @param jwt 当前已认证 JWT
+     * @param sessionId 当前用户上下文中的已认证会话标识
      */
-    public void revoke(Jwt jwt) { deleteSession(jwt.getId()); }
+    public void revoke(String sessionId) { deleteSession(sessionId); }
 
     /** 同时清理指定会话的状态、角色和权限，避免退出后残留授权快照。 */
     private void deleteSession(String jti) {
@@ -187,12 +195,13 @@ public class JwtSessionService {
     }
 
     /**
-     * Redis 缓存载荷，不存储密码哈希，仅保存密码版本摘要及角色权限快照。
+     * Redis 缓存载荷，不存储密码哈希，仅保存密码版本摘要与不含密码的用户资料；角色权限单独缓存。
      *
      * @param userId 用户 ID
      * @param username 登录用户名
      * @param passwordFingerprint 密码哈希摘要，用于修改密码后废止旧 JWT
+     * @param profile 登录时用户资料，不包含密码哈希
      * @author chomy
      */
-    public record CachedSession(Long userId, String username, String passwordFingerprint) { }
+    public record CachedSession(Long userId, String username, String passwordFingerprint, UserProfile profile) { }
 }

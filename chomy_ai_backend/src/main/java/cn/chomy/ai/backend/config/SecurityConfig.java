@@ -163,7 +163,7 @@ public class SecurityConfig {
                 .formLogin(AbstractHttpConfigurer::disable)
                 // 禁止 HTTP Basic，避免浏览器弹出账号密码窗口或引入第二种认证方式。
                 .httpBasic(AbstractHttpConfigurer::disable)
-                // 不使用默认 /logout，退出操作通过业务服务清理当前 JWT 对应的三份 Redis 缓存。
+                // 不使用默认 /logout，退出操作通过业务服务清理当前用户上下文对应的三份 Redis 缓存。
                 .logout(AbstractHttpConfigurer::disable)
                 // API 未登录时直接返回 JSON，不保存原请求，也不在登录后自动跳转。
                 .requestCache(AbstractHttpConfigurer::disable)
@@ -174,7 +174,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(requests -> requests
                         // 白名单与 MVC 登录拦截器共用，并同时限定 HTTP 方法和路径，避免两处规则不一致。
                         .requestMatchers(publicEndpoints).permitAll()
-                        // 当前用户退出及资料接口要求已登录，但不要求管理权限；用户 ID 只从认证 JWT 取得。
+                        // 当前用户退出及资料接口要求已登录，但不要求管理权限；用户 ID 由验签后的会话恢复到用户上下文。
                         .requestMatchers(HttpMethod.POST, "/user/logout").authenticated()
                         .requestMatchers(HttpMethod.GET, "/user/info").authenticated()
                         .requestMatchers(HttpMethod.PUT, "/user/info", "/user/password").authenticated()

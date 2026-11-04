@@ -6,8 +6,7 @@ import com.baomidou.mybatisplus.core.metadata.IPage;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.Positive;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import org.springframework.security.oauth2.jwt.Jwt;
+import cn.chomy.ai.backend.security.UserContext;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -24,14 +23,13 @@ public class UserController {
     private final AdminUserService adminUserService;
 
     /**
-     * @param jwt 当前认证主体
      * @param request 用户创建表单
      * @return 新建用户
      */
     @PostMapping
-    public AdminUserView create(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody AdminCreateUserRequest request) {
-        // 创建人从 JWT 提取，不允许表单指定；其余流程全部委托 Service。
-        return adminUserService.create(Long.valueOf(jwt.getSubject()), request);
+    public AdminUserView create(@Valid @RequestBody AdminCreateUserRequest request) {
+        // 创建人从认证用户上下文提取，不允许表单指定；其余流程全部委托 Service。
+        return adminUserService.create(UserContext.userId(), request);
     }
 
     /**
@@ -45,14 +43,13 @@ public class UserController {
     }
 
     /**
-     * @param jwt 当前认证主体
      * @param id 目标用户 ID
      * @return 冻结后的用户
      */
     @PutMapping("/{id}/freeze")
-    public AdminUserView freeze(@AuthenticationPrincipal Jwt jwt, @PathVariable @Positive(message = "用户ID必须为正数") Long id) {
-        // 操作者仅来自 JWT，由业务层判断是否为自己并撤销旧会话。
-        return adminUserService.freeze(Long.valueOf(jwt.getSubject()), id);
+    public AdminUserView freeze(@PathVariable @Positive(message = "用户ID必须为正数") Long id) {
+        // 操作者仅来自认证用户上下文，由业务层判断是否为自己并撤销旧会话。
+        return adminUserService.freeze(UserContext.userId(), id);
     }
 
     /**
@@ -100,14 +97,13 @@ public class UserController {
     }
 
     /**
-     * @param jwt 当前认证主体
      * @param id 目标用户 ID
      * @return 删除提示
      */
     @DeleteMapping("/{id}")
-    public String delete(@AuthenticationPrincipal Jwt jwt, @PathVariable @Positive(message = "用户ID必须为正数") Long id) {
+    public String delete(@PathVariable @Positive(message = "用户ID必须为正数") Long id) {
         // 删除及关系清理在同一业务事务中完成，删除也要求 update 组权限。
-        return adminUserService.delete(Long.valueOf(jwt.getSubject()), id);
+        return adminUserService.delete(UserContext.userId(), id);
     }
 
     /**

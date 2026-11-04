@@ -9,13 +9,13 @@ import cn.chomy.ai.backend.entity.User;
 import cn.chomy.ai.backend.mapper.UserMapper;
 import cn.chomy.ai.backend.security.JwtSessionService;
 import cn.chomy.ai.backend.security.LoginUser;
+import cn.chomy.ai.backend.security.UserContext;
 import cn.chomy.ai.backend.service.LoginService;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 
 /**
@@ -65,13 +65,12 @@ public class LoginServiceImpl implements LoginService {
     /**
      * 清理当前认证会话的登录状态、角色及权限缓存。
      *
-     * @param jwt 当前认证 JWT
      * @return 退出成功提示
      */
     @Override
-    public String logout(Jwt jwt) {
+    public String logout() {
         // 只撤销认证主体对应的当前会话，不能接受外部指定的其他用户或其他设备 Token。
-        sessions.revoke(jwt);
+        sessions.revoke(UserContext.require().sessionId());
         return "退出成功";
     }
 }

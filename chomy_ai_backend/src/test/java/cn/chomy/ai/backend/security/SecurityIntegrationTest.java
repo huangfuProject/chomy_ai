@@ -105,13 +105,21 @@ class SecurityIntegrationTest {
         json = context.getBean(ObjectMapper.class);
         store.user.setPasswordHash(context.getBean(PasswordEncoder.class).encode("OriginalPass123!"));
         mvc = MockMvcBuilders.webAppContextSetup(context)
-                .addFilters(new RequestTimingFilter(), new CorsConfig().corsFilterRegistration().getFilter())
+                .addFilters(new RequestTimingFilter(), new UserContextCleanupFilter(), new CorsConfig().corsFilterRegistration().getFilter())
                 .apply(springSecurity()).build();
     }
 
     /** 关闭每个测试创建的上下文，避免共享安全状态。 */
     @AfterEach
-    void tearDown() { if (context != null) { context.close(); } }
+    void tearDown() {
+        try {
+            // 完整安全链的成功、401、403、503 分支都必须释放容器线程上的用户。
+            assertThat(UserContext.get()).isNull();
+        } finally {
+            UserContext.clear();
+            if (context != null) { context.close(); }
+        }
+    }
 
     /** 登录返回 JWT、资料和角色权限，并将同一授权快照写入有有效期的 Redis 会话。 */
     @Test
@@ -120,12 +128,31 @@ class SecurityIntegrationTest {
         assertThat(token.split("\\.")).hasSize(3);
         assertThat(store.cache).hasSize(3);
         String cached = String.join(" ", store.cache.values());
-        assertThat(cached).contains("roleCode", "demo:read", "passwordFingerprint")
+        assertThat(cached).contains("roleCode", "demo:read", "passwordFingerprint", "profile", "原签名")
                 .doesNotContain("passwordHash", "OriginalPass123!");
         mvc.perform(get("/user/info").header("Authorization", "Bearer " + token))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.username").value("alice"))
                 .andExpect(jsonPath("$.data.passwordHash").doesNotExist());
         verify(store.roles, times(1)).selectList(any(Wrapper.class));
+    }
+
+    /** 请求从 Redis 恢复登录快照，伪造用户头无效；旧格式或错配资料必须要求重新登录。 */
+    @Test
+    void restoresUserContextAndRejectsIncompleteCachedProfile() throws Exception {
+        String token = login();
+        mvc.perform(get("/test/context").header("Authorization", "Bearer " + token).header("X-User-Id", "999"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.id").value("1"))
+                .andExpect(jsonPath("$.data.username").value("alice"))
+                .andExpect(jsonPath("$.data.signature").value("原签名"));
+        assertThat(UserContext.get()).isNull();
+        String key = store.cache.keySet().stream().filter(value -> value.startsWith("chomy:auth:session:")).findFirst().orElseThrow();
+        var cached = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(store.cache.get(key));
+        cached.withObject("/profile").put("id", "999");
+        store.cache.put(key, json.writeValueAsString(cached));
+        mvc.perform(get("/user/info").header("Authorization", "Bearer " + token)).andExpect(status().isUnauthorized());
+        cached.remove("profile");
+        store.cache.put(key, json.writeValueAsString(cached));
+        mvc.perform(get("/user/info").header("Authorization", "Bearer " + token)).andExpect(status().isUnauthorized());
     }
 
     /** 匿名访问个人接口返回 401，公开健康检查正常。 */
@@ -864,6 +891,10 @@ class SecurityIntegrationTest {
     static class ProtectedController {
         /** 数据库配置的 GET 接口权限可访问此路径。 */
         @GetMapping("/test/protected") public String read() { return "ok"; }
+        /** 返回拦截器绑定的用户资料，证明 Controller 无需接收 JWT。 */
+        @GetMapping("/test/context") public cn.chomy.ai.backend.dto.auth.UserProfile contextUser() {
+            return UserContext.require().profile();
+        }
         /** 未配置 POST 权限时应拒绝，而不是继承同一路径 GET 权限。 */
         @PostMapping("/test/protected") public String write() { return "ok"; }
         /** 请求级权限通过后，方法级缺失权限仍必须返回 403。 */

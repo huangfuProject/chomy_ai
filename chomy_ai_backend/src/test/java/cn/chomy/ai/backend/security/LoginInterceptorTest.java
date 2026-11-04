@@ -45,6 +45,7 @@ class LoginInterceptorTest {
     @BeforeEach
     void setUp() {
         SecurityContextHolder.clearContext();
+        UserContext.clear();
         ObjectMapper mapper = new ObjectMapper();
         interceptor = new LoginInterceptor(new SecurityConfig().publicEndpointMatcher(), new SecurityResponseHandler(mapper));
         mvc = MockMvcBuilders.standaloneSetup(new FixtureController())
@@ -54,7 +55,10 @@ class LoginInterceptorTest {
 
     /** 所有测试完成后清理当前线程认证，不能污染后续接口及安全链测试。 */
     @AfterEach
-    void tearDown() { SecurityContextHolder.clearContext(); }
+    void tearDown() {
+        SecurityContextHolder.clearContext();
+        UserContext.clear();
+    }
 
     /** 无认证上下文或只有未经验证的请求头均返回统一 401，不执行受保护控制器。 */
     @Test
@@ -71,6 +75,7 @@ class LoginInterceptorTest {
     @Test
     void acceptsOnlyAuthenticatedJwtContext() throws Exception {
         JwtAuthenticationToken jwt = new JwtAuthenticationToken(token(), List.of());
+        jwt.setDetails(user(1L));
         setAuthentication(jwt);
         mvc.perform(get("/private")).andExpect(status().isOk()).andExpect(jsonPath("$.data").value("secret"));
 
@@ -109,6 +114,41 @@ class LoginInterceptorTest {
         assertThat(interceptor.preHandle(health, new MockHttpServletResponse(), new Object())).isTrue();
     }
 
+    /** 没有服务端用户快照或快照与 JWT 身份不一致时，不能凭 JWT 主体绕过上下文校验。 */
+    @Test
+    void rejectsMissingOrMismatchedUserSnapshot() throws Exception {
+        JwtAuthenticationToken authentication = new JwtAuthenticationToken(token(), List.of());
+        setAuthentication(authentication);
+        mvc.perform(get("/private")).andExpect(status().isUnauthorized());
+        authentication.setDetails(user(2L));
+        mvc.perform(get("/private")).andExpect(status().isUnauthorized());
+        assertThat(UserContext.get()).isNull();
+    }
+
+    /** 公开请求、正常返回及处理器异常之后都不能保留上一个用户的上下文。 */
+    @Test
+    void clearsContextOnPublicSuccessAndException() throws Exception {
+        UserContext.set(user(1L));
+        mvc.perform(post("/user/login")).andExpect(status().isOk());
+        assertThat(UserContext.get()).isNull();
+        JwtAuthenticationToken authentication = new JwtAuthenticationToken(token(), List.of());
+        authentication.setDetails(user(1L));
+        setAuthentication(authentication);
+        mvc.perform(get("/private")).andExpect(status().isOk());
+        assertThat(UserContext.get()).isNull();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> mvc.perform(get("/failure")))
+                .hasCauseInstanceOf(IllegalStateException.class);
+        assertThat(UserContext.get()).isNull();
+    }
+
+    /** 构造不含密码的固定服务端资料，测试不从 HTTP 头恢复用户。 */
+    private CurrentUser user(Long id) {
+        var account = new cn.chomy.ai.backend.entity.User();
+        account.setId(id);
+        account.setUsername("alice");
+        return new CurrentUser("test-session", cn.chomy.ai.backend.dto.auth.UserProfile.from(account), List.of(), List.of());
+    }
+
     /** 保存已由测试明确提供的认证主体，模拟安全链完成认证后的上下文。 */
     private void setAuthentication(Authentication authentication) {
         var context = SecurityContextHolder.createEmptyContext();
@@ -119,7 +159,7 @@ class LoginInterceptorTest {
     /** 构造仅用于状态检查的 JWT；不声称此测试数据已通过签名验证。 */
     private Jwt token() {
         return Jwt.withTokenValue("test-only").header("alg", "HS256").subject("1")
-                .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
+                .jti("test-session").issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(60)).build();
     }
 
     /**
@@ -130,7 +170,16 @@ class LoginInterceptorTest {
     @RestController
     static class FixtureController {
         /** 受保护资源，用返回值证明控制器是否执行。 */
-        @GetMapping("/private") public String protectedResource() { return "secret"; }
+        @GetMapping("/private") public String protectedResource() {
+            // 身份必须在控制器调用时已绑定，而不是仅在请求结束后检查清理状态。
+            assertThat(UserContext.userId()).isEqualTo(1L);
+            return "secret";
+        }
+        /** 模拟业务异常，确保 afterCompletion 仍然清理线程。 */
+        @GetMapping("/failure") public String failure() {
+            assertThat(UserContext.userId()).isEqualTo(1L);
+            throw new IllegalStateException("测试业务异常");
+        }
         /** 模拟公开登录入口，不执行任何真实认证或数据库操作。 */
         @PostMapping("/user/login") public String login() { return "login"; }
         /** 同一路径 GET 不属于公开登录规则。 */
