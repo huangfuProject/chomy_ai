@@ -34,6 +34,10 @@ public enum AgentPermission {
     CHAT_RESTORE("agent:chat:restore"),
     /** 在本人项目间移动聊天，或移出为无项目聊天。 */
     CHAT_MOVE("agent:chat:move"),
+    /** 分页查询本人聊天消息历史。 */
+    CHAT_MESSAGES("agent:chat:messages"),
+    /** 订阅本人聊天级 SSE 事件。 */
+    CHAT_SUBSCRIBE("agent:chat:subscribe"),
     /** 删除本人对话。 */
     CHAT_DELETE("agent:chat:delete");
     /** 权限协议使用的稳定字符串。 */

@@ -10,6 +10,7 @@ import org.springframework.security.authentication.AuthenticationServiceExceptio
 import org.springframework.security.access.AccessDeniedException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
@@ -40,7 +41,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      */
     @ExceptionHandler(BizException.class)
     public ResponseEntity<ApiResult<Void>> handleBusinessException(BizException exception) {
-        return ResponseEntity.badRequest().body(ApiResult.failure(exception.getCode(), exception.getMessage()));
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON).body(ApiResult.failure(exception.getCode(), exception.getMessage()));
     }
 
     /**
@@ -53,7 +54,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ApiResult<Void>> handleConstraintViolation(ConstraintViolationException exception) {
         String message = exception.getConstraintViolations().stream()
                 .map(violation -> violation.getMessage()).distinct().sorted().collect(Collectors.joining("；"));
-        return ResponseEntity.badRequest().body(ApiResult.failure(400, message.isBlank() ? "请求参数校验失败" : message));
+        return ResponseEntity.badRequest().contentType(MediaType.APPLICATION_JSON).body(ApiResult.failure(400, message.isBlank() ? "请求参数校验失败" : message));
     }
 
     /**
@@ -93,7 +94,11 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
         if (status.is5xxServerError()) {
             log.error("请求处理发生服务端异常：{}", request.getDescription(false), exception);
         }
-        return super.handleExceptionInternal(exception, ApiResult.failure(status.value(), message), headers, status, request);
+        // SSE 建连前仍可能发生参数或协议错误；显式使用 JSON，避免 Accept: text/event-stream 阻止错误序列化。
+        HttpHeaders errorHeaders = new HttpHeaders();
+        errorHeaders.putAll(headers);
+        errorHeaders.setContentType(MediaType.APPLICATION_JSON);
+        return super.handleExceptionInternal(exception, ApiResult.failure(status.value(), message), errorHeaders, status, request);
     }
 
     /**
@@ -105,9 +110,9 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ApiResult<Void>> handleAuthenticationException(AuthenticationException exception) {
         if (exception instanceof AuthenticationServiceException) {
             log.error("认证基础设施异常", exception);
-            return ResponseEntity.status(503).body(ApiResult.failure(503, "认证服务暂不可用，请稍后重试"));
+            return ResponseEntity.status(503).contentType(MediaType.APPLICATION_JSON).body(ApiResult.failure(503, "认证服务暂不可用，请稍后重试"));
         }
-        return ResponseEntity.status(401).body(ApiResult.failure(401, "用户名或密码错误，或账户不可用"));
+        return ResponseEntity.status(401).contentType(MediaType.APPLICATION_JSON).body(ApiResult.failure(401, "用户名或密码错误，或账户不可用"));
     }
 
     /**
@@ -117,7 +122,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
      */
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiResult<Void>> handleAccessDeniedException(AccessDeniedException exception) {
-        return ResponseEntity.status(403).body(ApiResult.failure(403, "无权访问该资源"));
+        return ResponseEntity.status(403).contentType(MediaType.APPLICATION_JSON).body(ApiResult.failure(403, "无权访问该资源"));
     }
 
     /**
@@ -131,6 +136,6 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     public ResponseEntity<ApiResult<Void>> handleUnexpectedException(Exception exception, WebRequest request) {
         log.error("请求处理发生未预期异常：{}", request.getDescription(false), exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-                .body(ApiResult.failure(500, "服务器内部错误，请稍后重试"));
+                .contentType(MediaType.APPLICATION_JSON).body(ApiResult.failure(500, "服务器内部错误，请稍后重试"));
     }
 }

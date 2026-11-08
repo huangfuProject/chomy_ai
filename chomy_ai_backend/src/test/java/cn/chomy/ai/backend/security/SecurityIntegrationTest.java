@@ -2,6 +2,9 @@ package cn.chomy.ai.backend.security;
 
 import cn.chomy.ai.backend.controller.user.AgentProjectController;
 import cn.chomy.ai.backend.controller.user.AgentChatController;
+import cn.chomy.ai.backend.controller.user.SessionMessageController;
+import cn.chomy.ai.backend.service.SessionMessageService;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import cn.chomy.ai.backend.service.AgentProjectService;
 import cn.chomy.ai.backend.service.AgentChatService;
 import cn.chomy.ai.backend.dto.agent.CreateAgentProjectRequest;
@@ -747,6 +750,47 @@ class SecurityIntegrationTest {
         verifyNoInteractions(store.agentChats);
     }
 
+    /** 新会话接口独立鉴权，历史 JSON 继续包装，SSE 帧不得插入 ApiResult 外层。 */
+    @Test
+    void sessionMessageRoutesUseIndependentPermissionsAndSseFormat() throws Exception {
+        mvc.perform(get("/message/10/start")).andExpect(status().isUnauthorized());
+        mvc.perform(get("/message/10/messages")).andExpect(status().isUnauthorized());
+        grantAgentPermissions(AgentPermission.CHAT_MESSAGES);
+        when(store.sessionMessages.messages(anyLong(), any())).thenReturn(new Page<>());
+        String historyToken = login();
+        mvc.perform(get("/message/10/messages").header("Authorization", "Bearer " + historyToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.records").isArray());
+        mvc.perform(get("/message/10/start").header("Authorization", "Bearer " + historyToken)).andExpect(status().isForbidden());
+        grantAgentPermissions(AgentPermission.CHAT_SUBSCRIBE);
+        String subscribeToken = login();
+        SseEmitter emitter = new SseEmitter(0L);
+        when(store.sessionMessages.start(10L, "12-0")).thenReturn(emitter);
+        var result = mvc.perform(get("/message/10/start").header("Authorization", "Bearer " + subscribeToken)
+                        .header("Last-Event-ID", "12-0").accept("text/event-stream"))
+                .andExpect(status().isOk()).andExpect(request().asyncStarted()).andReturn();
+        emitter.send(SseEmitter.event().id("13-0").name("message.delta").data(Map.of("delta", "你好")));
+        assertThat(result.getResponse().getHeader("X-Accel-Buffering")).isEqualTo("no");
+        String body = result.getResponse().getContentAsString(java.nio.charset.StandardCharsets.UTF_8);
+        assertThat(body).contains("id:13-0", "event:message.delta", "data:", "你好").doesNotContain("durationMs", "\"code\":200");
+        emitter.complete();
+        mvc.perform(asyncDispatch(result)).andExpect(status().isOk());
+        mvc.perform(get("/message/10/messages").header("Authorization", "Bearer " + subscribeToken)).andExpect(status().isForbidden());
+        verify(store.sessionMessages).start(10L, "12-0");
+    }
+
+    /** 非法 chatId 和页码应在 MVC 层返回 400，不能启动任何订阅。 */
+    @Test
+    void sessionMessageValidatesChatIdAndPagination() throws Exception {
+        grantAgentPermissions(AgentPermission.CHAT_SUBSCRIBE, AgentPermission.CHAT_MESSAGES);
+        String token = login();
+        mvc.perform(get("/message/0/start").header("Authorization", "Bearer " + token).accept("text/event-stream"))
+                .andExpect(status().isBadRequest()).andExpect(content().contentTypeCompatibleWith("application/json"))
+                .andExpect(jsonPath("$.code").value(400));
+        mvc.perform(get("/message/10/messages?size=101").header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(store.sessionMessages);
+    }
+
     /** 表单和页码校验失败应返回 400，不能将非法参数交给业务层。 */
     @Test
     void agentEndpointsValidateInputs() throws Exception {
@@ -777,6 +821,9 @@ class SecurityIntegrationTest {
         // 名称生成的独立权限在 V7 中定义，测试读取真实路由以覆盖默认拒绝规则。
         sql += java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
                 "sql", "V7__add_agent_chat_name_permission.sql"));
+        // Chat 级历史与订阅权限在独立 V9 中，与实际部署路由共用定义。
+        sql += java.nio.file.Files.readString(java.nio.file.Path.of(System.getProperty("basedir", "."),
+                "sql", "V9__add_session_message_permissions.sql"));
         List<Permission> resources = new ArrayList<>();
         // 使用种子中真实路径和方法，避免测试自行声明一套与部署数据不同的权限。
         var matcher = Pattern.compile("\\((\\d+), \\d+, '(agent:[^']+)', '[^']+', 3, '([^']+)', '([A-Z]+)',").matcher(sql);
@@ -860,7 +907,7 @@ class SecurityIntegrationTest {
     @EnableWebSecurity
     @EnableWebMvc
     @Import({SecurityConfig.class, WebMvcConfig.class, LoginInterceptor.class, SecurityResponseHandler.class, JwtSessionService.class, RbacUserDetailsService.class,
-            RbacAuthorizationManager.class, AgentProjectController.class, AgentChatController.class, LoginController.class, UserInfoController.class, UserController.class, UserServiceImpl.class, LoginServiceImpl.class,
+            RbacAuthorizationManager.class, SessionMessageController.class, AgentProjectController.class, AgentChatController.class, LoginController.class, UserInfoController.class, UserController.class, UserServiceImpl.class, LoginServiceImpl.class,
             GlobalResponseAdvice.class, GlobalExceptionHandler.class, CodeEnumBindingAdvice.class, HealthController.class, ProtectedController.class})
     static class TestConfig {
         /** 创建隔离数据容器，测试间不复用密码及登录会话。 */
@@ -883,6 +930,8 @@ class SecurityIntegrationTest {
         @Bean AgentProjectService agentProjectService(TestStore store) { return store.agentProjects; }
         /** 对话业务替身，保留接口上的真实方法权限检查。 */
         @Bean AgentChatService agentChatService(TestStore store) { return store.agentChats; }
+        /** Chat 级会话业务边界，保留接口上真实方法鉴权。 */
+        @Bean SessionMessageService sessionMessageService(TestStore store) { return store.sessionMessages; }
         /** Redis 内存边界。 */
         @Bean StringRedisTemplate redis(TestStore store) { return store.redis; }
     }
@@ -918,6 +967,8 @@ class SecurityIntegrationTest {
         final AgentProjectService agentProjects = mock(AgentProjectService.class);
         /** 对话业务调用边界。 */
         final AgentChatService agentChats = mock(AgentChatService.class);
+        /** Chat 级历史与订阅业务边界。 */
+        final SessionMessageService sessionMessages = mock(SessionMessageService.class);
         final AdminUserService adminUsers = mock(AdminUserService.class);
         final UserMapper users = mock(UserMapper.class);
         final UserRoleMapper userRoles = mock(UserRoleMapper.class);

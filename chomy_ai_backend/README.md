@@ -401,3 +401,34 @@ V1 建表完成后，执行 `sql/V2__init_rbac_and_user_data.sql`，先初始化
 静态初始化和升级数据统一采用单行插入语句 `INSERT INTO ... VALUES (...);`，每条 INSERT 只插入一行，保留 VALUES 关键字，不使用多组 VALUES 批量插入；直接列出菜单父 ID、用户角色关联和超级管理员授权（V2 共 21 条，V3 原 18 条，V4 补充 1 条，V5 补充 2 条）。V2、V3、V4 和 V5 不使用 `INSERT ... SELECT` 或 JOIN 组装静态数据；授权关系 ID 沿用原有确定值，重复关系通过 `ON CONFLICT` 跳过。后续新增权限时，必须在对应版本脚本中同步追加独立的超级管理员授权 INSERT 语句。
 
 所有关联使用 V2 中的固定种子 ID。已有数据库执行前须核对同编码目录、菜单、权限以及 `admin`、`super_admin` 的 ID 与脚本一致；自定义 ID 须先调整脚本中的关联值。脚本仅授权明确列出的权限，自定义权限需额外列出授权行，不再扫描权限表。
+
+
+### 聊天消息与执行任务基础持久化（V8）
+
+新库及已有库均在 `sys_agent_chat` 已存在后手动执行 `sql/V8__create_agent_chat_message_task_tables.sql` 一次，不修改历史 V1、不自动执行 SQL。V8 创建 `sys_agent_chat_message` 和 `sys_agent_chat_task`，不创建外键、CHECK、触发器或数据库级联，也不插入测试数据。
+
+`AgentChatMessage` 保存用户消息与 AI 回复，`role` 使用 `user`、`assistant` 字符串枚举；`content` 使用 `JsonNode`，通过字段级 `JsonbTypeHandler` 按 PostgreSQL JSONB 读写。消息状态为 0 待处理、1 生成中、2 已完成、3 失败、4 已取消。按聊天、创建时间和 ID 索引恢复历史，按任务查询关联回复；GIN 索引支持 JSON 包含及键存在查询，不提供正文全文或任意子串搜索。
+
+`AgentChatTask` 保存触发消息、执行状态及开始/结束时间；`messageId` 指向触发的用户消息，允许同一消息重试产生多个任务，关联消息的 `taskId` 指向一次执行任务。任务状态为 0 待执行、1 执行中、2 已完成、3 失败、4 取消中、5 已取消。补充 `errorMessage` 保存脱敏错误摘要，`checkpointId` 保存执行引擎恢复位置引用；检查点实际内容仍须由引擎持久化。用户消息可先保存，再通过业务事务创建任务并回填关联 ID。
+
+两组 Mapper、Service 仅提供 MyBatis-Plus 通用 CRUD，供内部可信业务调用。尚未实现执行调度、状态流转、任务取消、恢复接口或消息检索接口；后续业务须校验聊天所有权及关联一致性，显式维护执行时间。现有聊天/项目删除流程尚未接入这两张表，写入新表前须在同一删除事务内补齐消息及任务清理，避免产生孤立记录。Java 状态字段不设置默认值，空枚举不自动转换为正常状态，数据库默认值仅用于未指定状态的插入。
+
+
+### Chat 级历史及 SSE 订阅
+
+`SessionMessageController` 提供以下两个独立接口，用户身份由现有认证链及 `UserContext` 提供。先执行 V8 创建消息表，再手动执行 `sql/V9__add_session_message_permissions.sql` 配置独立权限及超级管理员授权；执行前核对种子 ID，执行后撤销相关会话或重新登录。
+
+| 方法 | 路径 | 独立权限 | 行为 |
+| --- | --- | --- | --- |
+| GET | `/message/{chatId}/messages?current=1&size=20` | `agent:chat:messages` | PostgreSQL 历史分页，含生成中的 Assistant 内容，按创建时间和 ID 倒序；前端正序展示时自行排列 |
+| GET | `/message/{chatId}/start` | `agent:chat:subscribe` | Chat 级 SSE，返回 `text/event-stream`，不使用普通 API JSON 外层 |
+
+`start` 在建连前验证聊天属于当前用户；只读取 `chomy:chat:events:{chatId}` Redis Stream，不创建消息、Task、Stream 或执行 Agent。每个连接拥有独立 XREAD 游标，禁止使用消费组把事件分摊给不同窗口。Stream 不存在或空读不会断开，最长阻塞读取 1 秒，默认每 15 秒发送 `:heartbeat` 注释帧；应用、代理也须支持长期连接，接口设置 `Cache-Control: no-cache, no-transform` 和 `X-Accel-Buffering: no`。
+
+每个 Redis 条目约定 `event` 为事件名（可省略，默认 `message`，仅允许字母开头及字母数字、下划线、点或短横线，最多 64 字符），`data` 为一个合法 JSON 值，例如 `XADD chomy:chat:events:123 * event message.delta data '{"messageId":"456","delta":"你好"}'`。后续生产方必须在消息增量持久化成功后发布事件，并负责流保留策略；本次未新增生产者。SSE 使用 Redis Stream ID 作为 `id`，事件名及 JSON 数据原样推送；`task.completed`、`task.failed` 等只是数据事件，不结束 Chat 订阅。
+
+首次订阅从 `0-0` 重放 Stream 中仍保留的事件，避免历史读取到建连之间的事件空隙；每批最多 100 条，不一次读入全部。重连可通过标准 `Last-Event-ID` 请求头继续读取其后的事件。前端应按事件 ID 去重，并按消息 ID 合并增量或快照；由于 Redis 保留范围及网络断连，不能承诺严格恰好一次送达，重连时应重新读取 PostgreSQL 历史校准。`ready` 控制事件和心跳不更新重连游标。
+
+SSE 初次认证后每个心跳周期重新校验 JWT 有效期、Redis 会话、账户和订阅权限，并验证聊天仍属于本人；后台虚拟线程不继承用户 ThreadLocal。客户端断开、授权失效、Redis 故障或应用停止时清理该连接读取线程；不会取消 Task 或删除事件。建连前 Redis 故障返回失败，运行中故障发送 `subscription-error`（连接可写时）并结束订阅，前端携游标重连。浏览器原生 EventSource 不能自定义 Bearer 请求头，本项目使用 Authorization 认证，前端须用支持请求头及 SSE 解析的 fetch 客户端；禁止将 JWT 放入 URL。
+
+本次仅实现历史 GET 与订阅 GET，未实现 POST `/message/{chatId}/messages`，未提交 Agent 执行，也未增加 Python 回调与事件发布链路。SSE 中没有事件时保持连接是正常状态，不代表需要创建任务。
